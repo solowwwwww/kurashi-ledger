@@ -103,3 +103,8 @@ progress::-moz-progress-bar{background:var(--green);border-radius:8px}
 .week-card{position:relative}
 .week-card:has(.card-target:active){background:#edf5ef}
 .week-card .actions button{position:relative;z-index:2}
+
+.actual-overrun{color:#DC2626;font-weight:700}
+.actual-overrun-mark{position:absolute;right:0;inset-block:-2px;width:5px;border-radius:3px;background:#DC2626}
+.available-shortfall{color:#80521e;font-weight:650}
+.transaction-note{white-space:pre-wrap;overflow-wrap:anywhere}

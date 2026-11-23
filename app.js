@@ -1,4 +1,4 @@
-import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget} from './ledger.mjs'
+import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation} from './ledger.mjs'
 import {openLedger,access} from './storage.mjs'
 import {exportCSV,previewCSV,exportBackup,mergeBackup,readBackup} from './interchange.mjs'
 
@@ -13,12 +13,12 @@ const select=(name,values,selected)=>`<select name="${name}">${values.map(([valu
 const opts=values=>values.map(value=>[value,value])
 const dateLabel=d=>d.slice(5).replace('-','月')+'日'
 const dateRange=(start,end)=>`${dateLabel(start)} – ${dateLabel(end)}`
-const plannedStatus={planned:'待付款',partial:'部分付款',paid:'已付清',cancelled:'已取消'}
+const plannedStatus={planned:'待付款',partial:'部分付款',paid:'已付清',cancelled:'已取消',closed:'已结束'}
 const fmtDate=d=>d.replaceAll('-','.')
 const getBudget=(data,start)=>data.budgets.find(b=>b.startDate===start)
 let db,data,tab='home',selected=cycle(today())
 let weekStart=''
-let route={ledger:true,tab:'home',weekStart:'',depth:0,key:crypto.randomUUID()}
+let route={ledger:true,tab:'home',weekStart:'',itemId:'',depth:0,key:crypto.randomUUID()}
 let movingBack=false
 const scrollPositions=new Map()
 const opened=new Map()
@@ -76,18 +76,20 @@ const outlineObserver = new ResizeObserver(entries=>{
   }
 })
 function livingProgress(b,totals) {
-  const {items,over}=livingBreakdown(b.totalAmount,totals)
+  const {items,actualOverrun,actualOverrunPercent,availableShortfall}=livingBreakdown(b.totalAmount,totals)
   const label=item=>item.kind==='spent'?(item.category==='家居'?'日用品':item.category):item.kind==='available'?'未分配可用':'未支付预留'
   const color=item=>item.kind==='spent'?`--segment-color:${spendingColors[item.category]};`:''
   return `<div class="living-progress">
     <div class="living-track ${b.totalAmount?'':'living-track-empty'}" aria-hidden="true">
       ${items.filter(item=>item.width>0).map(item=>`<span class="segment ${item.kind}" style="${color(item)}width:${item.width}%">${item.kind==='reserved'?reservedOutline:''}</span>`).join('')}
+      ${actualOverrun?'<span class="actual-overrun-mark"></span>':''}
     </div>
     <ul class="living-legend" aria-label="生活费预算构成">
       ${items.map(item=>`<li><span class="legend-mark ${item.kind}" style="${color(item)}" aria-hidden="true">${item.kind==='reserved'?reservedOutline:''}</span>
       <span>${label(item)}</span><strong>${yen(item.amount)}</strong><span class="legend-percent">${item.percent===null?'—':item.percent.toFixed(2)+'%'}</span></li>`).join('')}
     </ul>
-    ${over?`<p class="error">超支 ${yen(over)}</p>`:''}
+    ${actualOverrun?`<p class="actual-overrun">超支 ${yen(actualOverrun)}${actualOverrunPercent===null?'':`（${actualOverrunPercent.toFixed(2)}%）`}</p>`:
+      availableShortfall?`<p class="available-shortfall">可支配余额不足 ${yen(availableShortfall)}</p>`:''}
   </div>`
 }
 function overviewCard(id,label,content) {
@@ -131,15 +133,43 @@ function records(b) {
     <div class="panel">${transactionRows(rows)}</div></section>
     <section class="section"><h2>分类支出</h2><div class="panel">${categories.map(c=>`<div class="row"><span>${c}</span><strong class="money">${yen(totals.expenses.filter(t=>t.category===c).reduce((n,t)=>n+t.amount,0))}</strong></div>`).join('')}</div></section>`
 }
+function reservationFacts(r) {
+  return `<dl class="budget-facts"><div><dt>原始预留</dt><dd>${yen(r.plannedAmount)}</dd></div>
+    <div><dt>已实际支付</dt><dd>${yen(r.paid)}</dd></div><div><dt>尚未支付</dt><dd>${yen(r.outstanding)}</dd></div>
+    <div><dt>状态</dt><dd>${plannedStatus[r.status]}</dd></div></dl>
+    ${r.overrun?`<p class="actual-overrun">超出预留 ${yen(r.overrun)}</p>`:''}`
+}
+function reservationContent(r,totals,expandedCard=false) {
+  const payments=totals.expenses.filter(t=>t.reservationId===r.id)
+  return `${reservationFacts(r)}<h3>关联消费记录</h3>${transactionRows(ordered(payments))}
+    <div class="actions">
+      ${acceptsPayment(r)?button('＋ 添加相关消费','payment',r.id,'primary')+button('结束预留','close-reservation',r.id):''}
+      ${r.status==='closed'?'':button('管理预留','reservation',r.id)}
+      ${expandedCard?button('付款明细','reservation-details',r.id):''}
+    </div>`
+}
 function reservationsPanel(totals) {
-  return totals.reservations.map(r=>{
-    const payments=totals.expenses.filter(t=>t.reservationId===r.id)
-    return disclosure('reservation:'+r.id,`<strong>${esc(r.name)}</strong><small>${plannedStatus[r.status]} · 待付 ${yen(r.outstanding)}</small>`,`
-      <dl class="budget-facts"><div><dt>原始预留</dt><dd>${yen(r.plannedAmount)}</dd></div>
-      <div><dt>已实际支付</dt><dd>${yen(r.paid)}</dd></div><div><dt>尚未支付</dt><dd>${yen(r.outstanding)}</dd></div></dl>
-      <h3>关联消费记录</h3>${transactionRows(ordered(payments))}
-      <div class="actions">${r.status==='cancelled'?'':button('＋ 添加相关消费','payment',r.id,'primary')}${button('管理预留','reservation',r.id)}</div>`)
-  }).join('')||'<p class="empty">暂无预留</p>'
+  return totals.reservations.map(r=>disclosure('reservation:'+r.id,
+    `<strong>${esc(r.name)}</strong><small>${plannedStatus[r.status]} · 待付 ${yen(r.outstanding)}${r.overrun?` · <span class="actual-overrun">超出预留 ${yen(r.overrun)}</span>`:''}</small>`,
+    reservationContent(r,totals,true))).join('')||'<p class="empty">暂无预留</p>'
+}
+function reservationPage(b) {
+  const totals=summarize(b,data)
+  const r=totals.reservations.find(row=>row.id===route.itemId)
+  return r?`<h1>${esc(r.name)}</h1><div class="panel">${reservationContent(r,totals)}</div>`:'<p class="panel empty">此预留已移除。</p>'
+}
+function transactionPage() {
+  const t=data.transactions.find(row=>row.id===route.itemId)
+  if(!t) return '<p class="panel empty">这笔交易已删除。</p>'
+  const reservation=data.reservations.find(r=>r.id===t.reservationId)
+  return `<h1>${t.type==='transfer'?'转账记录':'消费记录'}</h1><div class="panel">
+    <div class="row"><strong>${esc(t.description||t.category||'转账')}</strong><strong class="money">${yen(t.amount)}</strong></div>
+    <dl class="budget-facts"><div><dt>日期</dt><dd>${fmtDate(t.date)}</dd></div>
+    <div><dt>付款方式</dt><dd>${esc(t.paymentMethod)}</dd></div>
+    ${t.category?`<div><dt>分类</dt><dd>${esc(t.category)}</dd></div>`:''}
+    ${reservation?`<div><dt>关联预留</dt><dd>${esc(reservation.name)}</dd></div>`:''}</dl>
+    ${t.note?`<p class="transaction-note">${esc(t.note)}</p>`:''}
+    <div class="actions">${button('编辑交易','edit-transaction',t.id,'primary')}</div></div>`
 }
 function weekFacts(w) {
   const known=w.planned!==undefined
@@ -198,8 +228,9 @@ function render() {
   }
   if(tab==='settings') {app.innerHTML=settings();updateOffline();return}
   const b=selectedBudget()
-  app.innerHTML=(tab==='week'?'':period())+(!b?`<section class="panel empty"><h1>本期尚未建立预算</h1><div class="actions" style="justify-content:center">${button('建立本期预算','edit-budget','','primary')}${getBudget(data,initial)?button('查看初始账期','initial'):''}</div></section>`:
-    tab==='home'?home(b):tab==='records'?records(b):tab==='week'?weekPage(b):Object.hasOwn(sections,tab)?sectionPage(b,tab):budgetPage(b))
+  if(tab==='transaction') {app.innerHTML=transactionPage();return}
+  app.innerHTML=(tab==='week'||tab==='reservation'?'':period())+(!b?`<section class="panel empty"><h1>本期尚未建立预算</h1><div class="actions" style="justify-content:center">${button('建立本期预算','edit-budget','','primary')}${getBudget(data,initial)?button('查看初始账期','initial'):''}</div></section>`:
+    tab==='home'?home(b):tab==='records'?records(b):tab==='week'?weekPage(b):tab==='reservation'?reservationPage(b):Object.hasOwn(sections,tab)?sectionPage(b,tab):budgetPage(b))
   for(const svg of app.querySelectorAll('.reserve-outline')) outlineObserver.observe(svg.parentElement)
 }
 
@@ -212,19 +243,27 @@ function applyRoute(next,scrollY=0) {
   app.focus({preventScroll:true})
   window.scrollTo(0,scrollY)
 }
-function navigate(destination,start='') {
-  if(movingBack||(tab===destination&&weekStart===start)) return
-  if(destination==='home'&&route.depth) {
-    movingBack=true
-    history.go(-route.depth)
+function goBack(steps=1) {
+  if(!route.depth||movingBack||busy) return
+  movingBack=true
+  history.go(-Math.min(steps,route.depth))
+}
+function navigate(destination,id='') {
+  const start=destination==='week'?id:''
+  const itemId=destination==='week'?'':id
+  if(movingBack||(tab===destination&&weekStart===start&&(route.itemId||'')===itemId)) return
+  if(destination==='home') {
+    goBack(route.depth)
     return
   }
   scrollPositions.set(route.key,window.scrollY)
-  const next={ledger:true,tab:destination,weekStart:start,depth:route.depth+1,key:crypto.randomUUID()}
-  history.pushState(next,'')
+  const next={ledger:true,tab:destination,weekStart:start,itemId,depth:route.depth+1,key:crypto.randomUUID()}
+  history.pushState(next,'','#'+encodeURIComponent([destination,id].filter(Boolean).join('/')))
   applyRoute(next)
 }
+let pendingSwipe
 window.addEventListener('popstate',event=>{
+  clearTimeout(pendingSwipe)
   movingBack=false
   if(!data||!event.state?.ledger||event.state.key===route.key) return
   scrollPositions.set(route.key,window.scrollY)
@@ -242,6 +281,7 @@ if(!appleMobile||standalone) {
   const passive={passive:true}
   window.addEventListener('touchstart',event=>{
     gesture=null
+    clearTimeout(pendingSwipe)
     if(!route.depth||movingBack||dialog.open||event.touches.length!==1) return
     const {clientX:x,clientY:y}=event.touches[0]
     if(x>30) return
@@ -264,8 +304,9 @@ if(!appleMobile||standalone) {
     const touch=event.changedTouches[0]
     const dx=touch.clientX-start.x
     if(dx>=80&&dx>Math.abs(touch.clientY-start.y)*1.5) {
-      movingBack=true
-      history.back()
+      pendingSwipe=setTimeout(()=>{
+        if(route.key===start.key&&!dialog.open) goBack()
+      },100)
     }
   },passive)
 }
@@ -328,9 +369,17 @@ function budgetEditor() {
       return {...current,budgets:upsert(current.budgets,row)}
     },'预算已保存'))
 }
+function endReservationEditor(id) {
+  const r=summarize(selectedBudget(),data).reservations.find(row=>row.id===id)
+  if(!acceptsPayment(r)) return
+  show('结束预留',`<p><strong>${esc(r.name)}</strong></p>${reservationFacts(r)}
+    <p>本次将释放 <strong>${yen(r.outstanding)}</strong>，已记录的消费会保留。</p>`,
+    ()=>save(current=>closeReservation(current,id,r),'预留已结束，已释放 '+yen(r.outstanding)))
+}
 function reservationEditor(id) {
   const b=selectedBudget()
   const r=data.reservations.find(x=>x.id===id)
+  if(r?.status==='closed') throw Error('已结束的预留不能修改')
   show(r?'管理预留':'添加预留',`<label>项目名称<input name="name" value="${esc(r?.name)}" required maxlength="120"></label>
     <label>计划金额（日元）<input type="number" name="amount" min="1" step="1" inputmode="numeric" value="${r?.plannedAmount??''}" required></label>
     <label>预留状态${select('status',[['planned','有效（付款后自动更新）'],['cancelled','已取消']],r?.status==='cancelled'?'cancelled':'planned')}</label>
@@ -338,6 +387,7 @@ function reservationEditor(id) {
     save(current=>{
       const old=current.reservations.find(x=>x.id===id)
       if(id&&!old) throw Error('预留已在其他窗口删除')
+      if(old?.status==='closed') throw Error('已结束的预留不能修改')
       const now=stamp()
       const row={...old,id:id||crypto.randomUUID(),budgetId:b.id,name:String(form.get('name')).trim(),plannedAmount:Number(form.get('amount')),status:form.get('status'),createdAt:old?.createdAt||now,updatedAt:now}
       return {...current,reservations:upsert(current.reservations,row)}
@@ -359,7 +409,7 @@ function weekBudgetEditor(start) {
 function transactionEditor(id,linked='',week=null) {
   const old=data.transactions.find(t=>t.id===id)
   const reservation=data.reservations.find(r=>r.id===linked)
-  if(linked&&(!reservation||reservation.status==='cancelled')) throw Error('此预留无法添加关联消费')
+  if(linked&&!acceptsPayment(reservation)) throw Error('此预留无法添加关联消费')
   const b=linked?data.budgets.find(row=>row.id===reservation.budgetId):budget(selected)
   const from=week?.start??b.startDate
   const to=week?.end??b.endDate
@@ -383,18 +433,19 @@ function transactionEditor(id,linked='',week=null) {
       const type=linked?'expense':form.get('type')
       const reservationId=type==='expense'?(linked||form.get('reservationId')||''):''
       await save(current=>{
-        if(linked&&!current.reservations.some(r=>r.id===linked&&r.status!=='cancelled')) throw Error('此预留无法添加关联消费')
         const target=getBudget(current,start)
         if(!target) throw Error('该日期所在账期尚无预算，请先建立预算')
         const latest=current.transactions.find(t=>t.id===id)
         if(id&&!latest) throw Error('交易已在其他窗口删除')
+        if(reservationId && reservationId!==latest?.reservationId &&
+          !acceptsPayment(current.reservations.find(r=>r.id===reservationId))) throw Error('此预留无法添加关联消费')
         const now=stamp()
         const row={...latest,id:id||crypto.randomUUID(),date:d,amount:Number(form.get('amount')),type,category:type==='expense'?form.get('category'):'',
           paymentMethod:form.get('paymentMethod'),description:form.get('description'),note:form.get('note'),budgetId:target.id,reservationId,
           createdAt:latest?.createdAt||now,updatedAt:now}
         return {...current,transactions:upsert(current.transactions,row)}
       },'交易已保存')
-      if(tab!=='week') selected=start
+      if(!['week','reservation','transaction'].includes(tab)) selected=start
       render()
     })
   const f=dialog.querySelector('form')
@@ -402,7 +453,7 @@ function transactionEditor(id,linked='',week=null) {
     const transfer=f.elements.type.value==='transfer'
     const d=f.elements.date.value
     const target=validDate(d)?getBudget(data,cycle(d)):null
-    const list=data.reservations.filter(r=>r.budgetId===target?.id&&(r.status!=='cancelled'||r.id===old?.reservationId))
+    const list=data.reservations.filter(r=>r.budgetId===target?.id&&(acceptsPayment(r)||r.id===old?.reservationId))
     f.querySelector('#category-field').hidden=transfer
     f.querySelector('#link-field').hidden=transfer
     f.elements.reservationId.innerHTML=option('','无关联',chosen)+list.map(r=>option(r.id,r.name,chosen)).join('')
@@ -487,6 +538,9 @@ document.addEventListener('click',async event=>{
   try {
     switch(action) {
       case 'tab': navigate(id);break
+      case 'reservation-details': navigate('reservation',id);break
+      case 'close-reservation': endReservationEditor(id);break
+      case 'edit-transaction': transactionEditor(id);break
       case 'week-details': navigate('week',id);break
       case 'week-budget': weekBudgetEditor(id);break
       case 'week-expense': {
@@ -507,7 +561,8 @@ document.addEventListener('click',async event=>{
       case 'edit-budget': budgetEditor();break
       case 'living-expense': transactionEditor('');break
       case 'transaction':
-        if(!id&&selectedBudget()&&Object.hasOwn(sections,tab)) sectionRecord('')
+        if(id) navigate('transaction',id)
+        else if(selectedBudget()&&Object.hasOwn(sections,tab)) sectionRecord('')
         else transactionEditor(id)
         break
       case 'reservation': reservationEditor(id);break
@@ -520,10 +575,14 @@ document.addEventListener('click',async event=>{
         }
         break
       case 'delete-reservation':
+        if(data.reservations.find(r=>r.id===id)?.status==='closed') break
         if(confirm('确定删除这项预留吗？已经记录的付款会保留。')) {
           busy=true
-          await save(current=>({...current,reservations:current.reservations.filter(r=>r.id!==id),
-            transactions:current.transactions.map(t=>t.reservationId===id?{...t,reservationId:'',updatedAt:stamp()}:t)}),'预留已删除')
+          await save(current=>{
+            if(current.reservations.find(r=>r.id===id)?.status==='closed') throw Error('已结束的预留必须保留')
+            return {...current,reservations:current.reservations.filter(r=>r.id!==id),
+            transactions:current.transactions.map(t=>t.reservationId===id?{...t,reservationId:'',updatedAt:stamp()}:t)}
+          },'预留已删除')
         }
         break
       case 'backup': download(`生活账本-${today()}.json`,exportBackup(await access(db)),'application/json');break
@@ -575,7 +634,7 @@ try {
     tab=route.tab
     weekStart=route.weekStart
   }
-  history.replaceState(route,'')
+  history.replaceState(route,'',route.depth?location.href:location.pathname+location.search)
   render()
   channel?.addEventListener('message',async ()=>{
     try {data=await access(db);render()} catch(error) {message(error.message,true)}

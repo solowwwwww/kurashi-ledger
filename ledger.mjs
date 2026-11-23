@@ -50,26 +50,40 @@ const sum = rows => rows.reduce((total,row) => {
   if (!Number.isSafeInteger(next)) throw Error('合计超出可精确计算的范围')
   return next
 },0)
+export const acceptsPayment = r => Boolean(r && r.status!=='closed' && r.status!=='cancelled')
+
 export function summarize(b,data) {
   const expenses = data.transactions.filter(t => t.budgetId === b.id && t.type === 'expense')
   const reservations = data.reservations.filter(r => r.budgetId === b.id).map(r => {
     const paid = sum(expenses.filter(t => t.reservationId === r.id))
-    const outstanding = r.status === 'cancelled' ? 0 : Math.max(0,r.plannedAmount-paid)
-    const status = r.status === 'cancelled' ? 'cancelled' : outstanding === 0 ? 'paid' : paid ? 'partial' : 'planned'
-    return {...r,paid,outstanding,status}
+    const outstanding = acceptsPayment(r) ? Math.max(0,r.plannedAmount-paid) : 0
+    const status = !acceptsPayment(r) ? r.status : outstanding === 0 ? 'paid' : paid ? 'partial' : 'planned'
+    return {...r,paid,outstanding,status,overrun:Math.max(0,paid-r.plannedAmount)}
   })
   const actual = sum(expenses)
   const outstanding = sum(reservations.map(r => ({amount:r.outstanding})))
   const committed = sum([{amount:actual},{amount:outstanding}])
   return {actual,outstanding,available:b.totalAmount-committed,reservations,expenses}
 }
+export function closeReservation(data,id,expected,closedAt=new Date().toISOString()) {
+  const reservation=data.reservations.find(row=>row.id===id)
+  if(!acceptsPayment(reservation)) throw Error('此预留已结束、取消或移除')
+  const b=data.budgets.find(row=>row.id===reservation.budgetId)
+  const latest=summarize(b,data).reservations.find(row=>row.id===id)
+  if(latest.name!==expected.name||latest.plannedAmount!==expected.plannedAmount||latest.paid!==expected.paid||latest.outstanding!==expected.outstanding) {
+    throw Error('预留或付款金额已变更，请关闭窗口后重新确认')
+  }
+  return {...data,reservations:data.reservations.map(row=>row.id===id?
+    {...row,status:'closed',closedAt,updatedAt:closedAt}:row)}
+}
+
 export function livingBreakdown(total, {expenses, outstanding, available, actual}) {
   const byCategory = new Map()
   for (const {category, amount} of expenses) {
     byCategory.set(category, (byCategory.get(category) ?? 0) + amount)
   }
-  const reserveWidth = total ? Math.min(total, outstanding) / total * 100 : 0
-  const spendWidth = total ? Math.min(actual, Math.max(0, total - outstanding)) / total * 100 : 0
+  const spendWidth = total ? Math.min(actual,total) / total * 100 : 0
+  const reserveWidth = total ? Math.min(outstanding,Math.max(0,total-actual)) / total * 100 : 0
   const availableWidth = total ? Math.max(0, available) / total * 100 : 0
   const items = categories.filter(category => byCategory.has(category)).map(category => ({
     kind: 'spent',
@@ -83,7 +97,9 @@ export function livingBreakdown(total, {expenses, outstanding, available, actual
   )
   return {
     items: items.map(item => ({...item, percent:total ? item.amount / total * 100 : null})),
-    over: Math.max(0, -available)
+    actualOverrun: Math.max(0,actual-total),
+    actualOverrunPercent: total ? Math.max(0,actual-total) / total * 100 : null,
+    availableShortfall: actual<=total ? Math.max(0,-available) : 0
   }
 }
 export function weeks(b,data) {
@@ -142,7 +158,7 @@ export function validate(data) {
   }
   for(const r of data.reservations) {
     if(!budgets.has(r.budgetId)||!amount(r.plannedAmount)||typeof r.name!=='string'||!r.name.trim()||
-       !['planned','partial','partially paid','paid','cancelled'].includes(r.status)) throw Error('无效的预留')
+       !['planned','partial','partially paid','paid','cancelled','closed'].includes(r.status)) throw Error('无效的预留')
   }
   const weekKeys=new Set()
   for(const w of data.weeklyBudgets) {

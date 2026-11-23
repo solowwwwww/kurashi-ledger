@@ -44,6 +44,9 @@ export function previewCSV(text,data) {
       if(row.length!==keys.length||!/^\d+$/.test(row[2])) throw Error('字段数量或金额无效')
       if(seen.has(row[0])) throw Error('重复交易 ID')
       const t=Object.fromEntries(keys.map((k,i)=>[k,k==='amount'?Number(row[i]):row[i]]))
+      if(t.reservationId&&data.reservations.some(r=>r.id===t.reservationId&&r.status==='closed')) {
+        throw Error('已结束的预留不能新增关联消费')
+      }
       const now=new Date().toISOString()
       const next={...candidate,transactions:[...candidate.transactions,{...t,createdAt:now,updatedAt:now}]}
       validate(next)
