@@ -3,7 +3,7 @@ import {stores, seed, validate} from './ledger.mjs'
 export const dbName = 'kurashi-ledger'
 export function openLedger() {
   return new Promise((resolve,reject)=>{
-    const request=indexedDB.open(dbName,1)
+    const request=indexedDB.open(dbName,2)
     request.onupgradeneeded=event=>{
       const db=request.result
       for(const name of stores) if(!db.objectStoreNames.contains(name)) db.createObjectStore(name,{keyPath:'id'})

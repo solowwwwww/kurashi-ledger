@@ -55,18 +55,16 @@ export function previewCSV(text,data) {
   return {accepted,rejected}
 }
 export function exportBackup(data) {
-  return JSON.stringify({format:'kurashi-ledger',version:1,data},null,2)
+  return JSON.stringify({format:'kurashi-ledger',version:2,data},null,2)
 }
 export function mergeBackup(text,current) {
-  const file=JSON.parse(text)
-  if(file.format!=='kurashi-ledger'||file.version!==1) throw Error('不支持的备份格式或版本')
-  validate(file.data)
+  const incoming=readBackup(text)
   let skipped=0
   const data={}
   for(const name of stores) {
     const ids=new Set(current[name].map(row=>row.id))
     data[name]=[...current[name]]
-    for(const row of file.data[name]) {
+    for(const row of incoming[name]) {
       if(ids.has(row.id)) {skipped++;continue}
       data[name].push(row)
     }
@@ -75,6 +73,6 @@ export function mergeBackup(text,current) {
 }
 export function readBackup(text) {
   const file=JSON.parse(text)
-  if(file.format!=='kurashi-ledger'||file.version!==1) throw Error('不支持的备份格式或版本')
-  return validate(file.data)
+  if(file?.format!=='kurashi-ledger'||![1,2].includes(file.version)) throw Error('不支持的备份格式或版本')
+  return validate(file.version===1?{...file.data,allocations:[]}:file.data)
 }

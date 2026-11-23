@@ -1,4 +1,4 @@
-import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate} from './ledger.mjs'
+import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal} from './ledger.mjs'
 import {openLedger,access} from './storage.mjs'
 import {exportCSV,previewCSV,exportBackup,mergeBackup,readBackup} from './interchange.mjs'
 
@@ -43,12 +43,37 @@ function period() {
     ${button('下一期','period',1)}
   </div>`
 }
+function progress(label,actual,target,description) {
+  const percent=target>0?Math.round(actual/target*100):null
+  return `<div class="progress-status"><span>${description} <strong>${yen(actual)}</strong>${target===undefined?'':' / '+yen(target)}</span><strong>${percent===null?'—':percent.toLocaleString('zh-CN')+'%'}</strong></div>
+  ${percent===null?'<p class="muted">未设置目标</p>':`<progress aria-label="${label}" max="100" value="${Math.min(100,percent)}"></progress>`}`
+}
+function sectionsOverview(b,totals) {
+  return `<section class="section"><h2>账期总览</h2><div class="overview">
+    <article class="panel overview-card"><div class="sectionhead"><h3>生活费</h3>${button('查看','tab','budget')}</div>
+    ${progress('生活费预算占用',totals.actual+totals.outstanding,b.totalAmount||undefined,'支出和待付预留')}</article>
+    ${Object.entries(sections).map(([id,section])=>{
+      const {actual,goal}=sectionTotal(b,id,data)
+      return `<article class="panel overview-card"><div class="sectionhead"><h3>${section.label}</h3>${button('查看','tab',id)}</div>
+        ${progress(section.label,actual,goal?.amount,section.actual)}</article>`
+    }).join('')}</div></section>`
+}
+function sectionPage(b,id) {
+  const section=sections[id]
+  const {actual,goal,records}=sectionTotal(b,id,data)
+  return `<h1>${section.label}</h1><div class="panel overview-card">
+    ${progress(section.label,actual,goal?.amount,section.actual)}
+    <div class="actions">${button(goal?'修改'+section.target:'设置'+section.target,'section-goal',id)}</div>
+  </div><section class="section"><div class="sectionhead"><h2>本期记录</h2>${button('记一笔','section-record','','primary')}</div>
+  <div class="panel">${ordered(records).map(row=>`<div class="row"><div><strong>${esc(row.description)}</strong><small>${fmtDate(row.date)}</small></div>${button(yen(row.amount),'section-record',row.id,'money')}</div>`).join('')||'<p class="empty">暂无记录</p>'}</div></section>`
+}
 function home(b) {
   const totals=summarize(b,data)
   const weekly=weeks(b,data)
   const current=weekly.find(w=>today()>=w.start&&today()<=w.end)
   return `<section class="hero"><h1>可用生活费</h1><div class="big">${yen(totals.available)}</div><p class="muted">本期预算 ${yen(b.totalAmount)}</p>
   <div class="figures"><div><span class="muted">实际支出</span><strong>${yen(totals.actual)}</strong></div><div><span class="muted">待付预留</span><strong>${yen(totals.outstanding)}</strong></div></div></section>
+  ${sectionsOverview(b,totals)}
   <section class="section"><div class="sectionhead"><h2>每周支出</h2></div><div class="panel">
   ${current?`<div class="row"><div><strong>本周</strong><small>${dateRange(current.start,current.end)}</small></div><strong class="money">${yen(current.actual)}</strong></div>`:''}
   <details ${current?'':'open'}><summary>查看各周统计</summary>${weekly.map(w=>`<div class="row"><div class="week"><strong>${dateRange(w.start,w.end)}</strong>
@@ -93,7 +118,7 @@ function render() {
   if(tab==='settings') {app.innerHTML=settings();updateOffline();return}
   const b=selectedBudget()
   app.innerHTML=period()+(!b?`<section class="panel empty"><h1>本期尚未建立预算</h1><div class="actions" style="justify-content:center">${button('建立本期预算','edit-budget','','primary')}${getBudget(data,initial)?button('查看初始账期','initial'):''}</div></section>`:
-    tab==='home'?home(b):tab==='records'?records(b):budgetPage(b))
+    tab==='home'?home(b):tab==='records'?records(b):Object.hasOwn(sections,tab)?sectionPage(b,tab):budgetPage(b))
 }
 
 function show(title,fields,handler) {
@@ -116,6 +141,34 @@ async function save(edit,text) {
 }
 const upsert=(rows,row)=>[...rows.filter(x=>x.id!==row.id),row]
 const stamp=()=>new Date().toISOString()
+function sectionGoal(id) {
+  const b=selectedBudget()
+  const {goal}=sectionTotal(b,id,data)
+  show(sections[id].target,`<label>金额（日元）<input name="amount" type="number" inputmode="numeric" min="1" step="1" value="${goal?.amount??''}" required></label>
+    ${goal?button('移除目标','delete-allocation',goal.id,'danger'):''}`,form=>
+    save(current=>{
+      const latest=sectionTotal(b,id,current).goal
+      const row={id:latest?.id||crypto.randomUUID(),kind:'goal',budgetId:b.id,section:id,amount:Number(form.get('amount'))}
+      return {...current,allocations:upsert(current.allocations,row)}
+    },'目标已保存'))
+}
+function sectionRecord(id) {
+  const b=selectedBudget()
+  const section=tab
+  const row=data.allocations.find(x=>x.id===id)
+  const now=today()
+  const date=row?.date||(now>=b.startDate&&now<=b.endDate?now:b.startDate)
+  show(row?'编辑记录':'记录'+sections[section].label,`<label>说明<input name="description" maxlength="140" value="${esc(row?.description)}" required></label>
+    <div class="fields"><label>金额（日元）<input name="amount" type="number" inputmode="numeric" min="1" step="1" value="${row?.amount??''}" required></label>
+    <label>日期<input name="date" type="date" min="${b.startDate}" max="${b.endDate}" value="${date}" required></label></div>
+    ${row?button('删除记录','delete-allocation',row.id,'danger'):''}`,form=>
+    save(current=>{
+      if(id&&!current.allocations.some(x=>x.id===id)) throw Error('此记录已在其他窗口删除')
+      const entry={id:id||crypto.randomUUID(),kind:'record',budgetId:b.id,section,amount:Number(form.get('amount')),
+        description:String(form.get('description')).trim(),date:form.get('date'),createdAt:row?.createdAt||stamp()}
+      return {...current,allocations:upsert(current.allocations,entry)}
+    },'记录已保存'))
+}
 function budgetEditor() {
   const existing=selectedBudget()
   const start=selected
@@ -209,7 +262,7 @@ function importEditor(restore) {
       let merge
       let conflict
       try {merge=mergeBackup(source,latest)} catch(error) {conflict=error.message}
-      show('预览备份恢复',`<p>备份包含 ${incoming.budgets.length} 个账期、${incoming.transactions.length} 笔交易、${incoming.reservations.length} 项预留。</p>
+      show('预览备份恢复',`<p>备份包含 ${incoming.budgets.length} 个账期、${incoming.transactions.length} 笔交易、${incoming.reservations.length} 项预留、${incoming.allocations.length} 项总账数据。</p>
       <p>${merge?`合并将新增 ${merge.added} 条记录，保留本地同 ID 的 ${merge.skipped} 条记录。`:'无法合并：'+esc(conflict)}</p>
       <label>恢复方式${select('mode',[['merge','合并并保留现有记录'],['replace','替换整个本地账本']], 'merge')}</label>`,params=>{
         if(params.get('mode')==='replace') {
@@ -264,8 +317,19 @@ document.addEventListener('click',async event=>{
       case 'tab': tab=id;render();app.focus();break
       case 'period': selected=shift(selected,Number(id));filters={from:'',to:'',category:'',paymentMethod:''};render();break
       case 'initial': selected=initial;render();break
+      case 'section-goal': sectionGoal(id);break
+      case 'section-record': sectionRecord(id);break
+      case 'delete-allocation':
+        if(confirm('确定删除这项总账数据吗？')) {
+          busy=true
+          await save(current=>({...current,allocations:current.allocations.filter(row=>row.id!==id)}),'已删除')
+        }
+        break
       case 'edit-budget': budgetEditor();break
-      case 'transaction': transactionEditor(id);break
+      case 'transaction':
+        if(!id&&selectedBudget()&&Object.hasOwn(sections,tab)) sectionRecord('')
+        else transactionEditor(id)
+        break
       case 'reservation': reservationEditor(id);break
       case 'payment': transactionEditor('',id);break
       case 'close': dialog.close();break

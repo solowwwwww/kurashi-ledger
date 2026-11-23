@@ -1,6 +1,12 @@
 export const categories = ['餐饮','交通','娱乐','家居','购物','健身','其他']
 export const methods = ['现金','银行卡','Suica','其他']
-export const stores = ['budgets','transactions','reservations','weeklyBudgets']
+export const stores = ['budgets','transactions','reservations','weeklyBudgets','allocations']
+export const sections = {
+  income: {label:'工资收入', actual:'已到账', target:'预计收入'},
+  fixed: {label:'固定费用', actual:'已支付', target:'费用预算'},
+  investment: {label:'投资', actual:'已投入', target:'投入目标'},
+  savings: {label:'储蓄', actual:'已划拨', target:'储蓄目标'}
+}
 export const initial = '2026-11-25'
 export const yen = n => new Intl.NumberFormat('ja-JP',{style:'currency',currency:'JPY'}).format(n)
 export const today = () => {
@@ -35,7 +41,8 @@ export function seed() {
     transactions:[],
     reservations:[['protein','REYS 乳清蛋白粉',5500],['atami','热海爵士现场',13000]].map(([id,name,plannedAmount]) =>
       ({id,budgetId:initial,name,plannedAmount,status:'planned',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()})),
-    weeklyBudgets:[]
+    weeklyBudgets:[],
+    allocations:[]
   }
 }
 const sum = rows => rows.reduce((total,row) => {
@@ -69,6 +76,13 @@ export function weeks(b,data) {
   }
   return result
 }
+export function sectionTotal(b,section,data) {
+  const entries=data.allocations.filter(row=>row.budgetId===b.id&&row.section===section)
+  const goal=entries.find(row=>row.kind==='goal')
+  const records=entries.filter(row=>row.kind==='record')
+  return {goal,records,actual:sum(records)}
+}
+
 export function validate(data) {
   for(const key of stores) {
     if(!Array.isArray(data?.[key])) throw Error('缺少数据表 '+key)
@@ -106,6 +120,21 @@ export function validate(data) {
        (t.type==='expense'&&!categories.includes(t.category))||
        (t.reservationId&&(!r||r.budgetId!==b.id||t.type!=='expense'))) throw Error('无效交易 '+t.id)
   }
-  for(const b of data.budgets) summarize(b,data)
+  const goals=new Set()
+  for(const row of data.allocations) {
+    const b=budgets.get(row.budgetId)
+    if(!b||!Object.hasOwn(sections,row.section)||!amount(row.amount)||!['goal','record'].includes(row.kind)) throw Error('无效的总账记录')
+    if(row.kind==='goal') {
+      const key=JSON.stringify([row.budgetId,row.section])
+      if(goals.has(key)) throw Error('同一区块只能有一个当期目标')
+      goals.add(key)
+    } else if(!validDate(row.date)||row.date<b.startDate||row.date>b.endDate||typeof row.description!=='string'||!row.description.trim()) {
+      throw Error('无效的总账日期或说明')
+    }
+  }
+  for(const b of data.budgets) {
+    summarize(b,data)
+    for(const section of Object.keys(sections)) sectionTotal(b,section,data)
+  }
   return data
 }
