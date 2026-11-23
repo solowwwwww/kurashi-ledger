@@ -68,3 +68,38 @@ progress{display:block;width:100%;height:9px;appearance:none;border:0;border-rad
 progress::-webkit-progress-bar{background:var(--mint);border-radius:8px}
 progress::-webkit-progress-value{background:var(--green);border-radius:8px}
 progress::-moz-progress-bar{background:var(--green);border-radius:8px}
+
+.overview article{position:relative;transition:background-color .12s,border-color .12s}
+.overview article:has(.card-target:hover){border-color:var(--green)}
+.overview article:has(.card-target:active){background:#edf5ef}
+.card-target{position:absolute;inset:0;z-index:1;width:100%;border:0;background:transparent;border-radius:inherit;padding:0}
+.card-target:focus-visible{outline-offset:3px}
+.overview article :is(a,button,input,select,textarea):not(.card-target){position:relative;z-index:2}
+.living-progress{display:grid;gap:10px;min-width:0}
+.living-track{display:flex;position:relative;height:24px;border-radius:8px;isolation:isolate}
+.living-track-empty{box-shadow:inset 0 0 0 1px var(--line)}
+.segment{display:block;min-width:0;flex:none}
+.segment:first-child{border-radius:8px 0 0 8px}
+.segment:last-child{border-radius:0 8px 8px 0}
+.segment:only-child{border-radius:8px}
+.segment.reserved{position:absolute;right:0;top:0;bottom:0}
+.spent{background:var(--segment-color)}
+.available{background:#ECEDEF}
+.reserve-outline{display:block;width:100%;height:100%;overflow:visible}
+.living-legend{margin:0;padding:0;display:grid;gap:5px;list-style:none;font-size:.875rem;font-variant-numeric:tabular-nums}
+.living-legend li{display:grid;grid-template-columns:16px minmax(0,1fr) auto auto;align-items:center;gap:6px}
+.legend-mark{display:block;width:16px;height:13px}
+.legend-percent{text-align:right;color:var(--muted);min-width:3.5em}
+@media(prefers-reduced-motion:reduce){.overview article{transition:none}}
+
+.ledger-disclosure{background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:0 14px 12px;margin-top:14px}
+.ledger-disclosure:not([open]){padding-bottom:0}
+.ledger-disclosure>summary{font-weight:650;padding:12px 0}
+.ledger-disclosure>summary small{margin-left:8px;font-weight:400}
+.ledger-disclosure>.ledger-disclosure{margin-top:8px}
+.budget-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 12px}
+.budget-facts dt{font-size:.875rem;color:var(--muted)}
+.budget-facts dd{margin:3px 0 0;font-weight:700;overflow-wrap:anywhere}
+.week-card{position:relative}
+.week-card:has(.card-target:active){background:#edf5ef}
+.week-card .actions button{position:relative;z-index:2}

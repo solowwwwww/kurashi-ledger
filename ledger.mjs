@@ -63,6 +63,29 @@ export function summarize(b,data) {
   const committed = sum([{amount:actual},{amount:outstanding}])
   return {actual,outstanding,available:b.totalAmount-committed,reservations,expenses}
 }
+export function livingBreakdown(total, {expenses, outstanding, available, actual}) {
+  const byCategory = new Map()
+  for (const {category, amount} of expenses) {
+    byCategory.set(category, (byCategory.get(category) ?? 0) + amount)
+  }
+  const reserveWidth = total ? Math.min(total, outstanding) / total * 100 : 0
+  const spendWidth = total ? Math.min(actual, Math.max(0, total - outstanding)) / total * 100 : 0
+  const availableWidth = total ? Math.max(0, available) / total * 100 : 0
+  const items = categories.filter(category => byCategory.has(category)).map(category => ({
+    kind: 'spent',
+    category,
+    amount: byCategory.get(category),
+    width: byCategory.get(category) / actual * spendWidth
+  }))
+  items.push(
+    {kind:'available', amount:Math.max(0, available), width:availableWidth},
+    {kind:'reserved', amount:outstanding, width:reserveWidth}
+  )
+  return {
+    items: items.map(item => ({...item, percent:total ? item.amount / total * 100 : null})),
+    over: Math.max(0, -available)
+  }
+}
 export function weeks(b,data) {
   const {expenses} = summarize(b,data)
   const result = []
@@ -75,6 +98,23 @@ export function weeks(b,data) {
       categories:Object.fromEntries(categories.map(c=>[c,sum(rows.filter(t=>t.category===c))]))})
   }
   return result
+}
+export function weeklyAllocation(b,data) {
+  const {outstanding}=summarize(b,data)
+  const limit=Math.max(0,b.totalAmount-outstanding)
+  const planned=sum(data.weeklyBudgets.filter(w=>w.budgetId===b.id).map(w=>({amount:w.plannedAmount})))
+  return {limit,planned,over:Math.max(0,planned-limit)}
+}
+export function updateWeeklyBudget(b,data,week,plannedAmount) {
+  if(plannedAmount!==undefined&&!amount(plannedAmount,0)) throw Error('请输入整数日元金额')
+  const existing=data.weeklyBudgets.find(w=>w.budgetId===b.id&&w.startDate===week.start)
+  const rows=data.weeklyBudgets.filter(w=>w!==existing)
+  if(plannedAmount!==undefined) rows.push({id:existing?.id??crypto.randomUUID(),budgetId:b.id,startDate:week.start,endDate:week.end,plannedAmount})
+  const updated={...data,weeklyBudgets:rows}
+  const before=weeklyAllocation(b,data)
+  const after=weeklyAllocation(b,updated)
+  if(after.over>0&&after.over>=before.over) throw Error('周预算合计超出可分配金额 '+yen(after.over)+'，请调低金额')
+  return updated
 }
 export function sectionTotal(b,section,data) {
   const entries=data.allocations.filter(row=>row.budgetId===b.id&&row.section===section)
