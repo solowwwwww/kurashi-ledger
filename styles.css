@@ -108,3 +108,11 @@ progress::-moz-progress-bar{background:var(--green);border-radius:8px}
 .actual-overrun-mark{position:absolute;right:0;inset-block:-2px;width:5px;border-radius:3px;background:#DC2626}
 .available-shortfall{color:#80521e;font-weight:650}
 .transaction-note{white-space:pre-wrap;overflow-wrap:anywhere}
+
+.fixed-plan-row{padding:8px 0 12px;border-bottom:1px solid var(--line)}
+.fixed-plan-row:last-child{border-bottom:0;padding-bottom:0}
+.fixed-plan-row .actions{margin-top:4px}
+.fixed-plan-row .row>div:first-child{flex:1}
+.fixed-plan-row .actions{gap:8px}
+.fixed-check{display:grid;place-items:center;flex:0 0 44px;width:44px;height:44px;padding:0;color:var(--green);border:1px solid var(--green);border-radius:12px;font-size:1.25rem;font-weight:700}
+.fixed-check.paid{background:var(--green);color:#fff}

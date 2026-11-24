@@ -1,4 +1,4 @@
-import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation} from './ledger.mjs'
+import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation,fixedPlanSummary,recordFixedPayment,undoFixedPayment} from './ledger.mjs'
 import {openLedger,access} from './storage.mjs'
 import {exportCSV,previewCSV,exportBackup,mergeBackup,readBackup} from './interchange.mjs'
 
@@ -101,17 +101,38 @@ function sectionsOverview(b,totals) {
     ${overviewCard('budget','生活费',`<p class="muted">本期预算 ${yen(b.totalAmount)}</p>${livingProgress(b,totals)}`)}
     ${Object.entries(sections).map(([id,section])=>{
       const {actual,goal}=sectionTotal(b,id,data)
-      return overviewCard(id,section.label,progress(section.label,actual,goal?.amount,section.actual))
+      const plan=id==='fixed'?fixedPlanSummary(b,data):null
+      return overviewCard(id,section.label,progress(section.label,actual,goal?.amount??(plan?.expected||undefined),section.actual)+
+        (plan?.plans.length?`<p class="muted">预计扣款 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>`:''))
     }).join('')}</div></section>`
+}
+function fixedPlansPanel(plan) {
+  const rows=[...plan.plans].sort((a,b)=>a.date.localeCompare(b.date)||a.description.localeCompare(b.description,'zh-CN'))
+  return `<section class="section"><div class="sectionhead"><h2>预计扣款</h2>${button('＋ 添加预计扣款','fixed-plan','','primary')}</div>
+    <div class="panel"><p class="muted">本期预计 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>
+    ${rows.map(row=>`<div class="fixed-plan-row">
+      <div class="row"><div><strong>${esc(row.description)}</strong><small>预计 ${fmtDate(row.date)} · ${row.payment?'已付款':row.date<today()?'已过预计日期 · 待付款':'待付款'}</small></div>
+      <strong class="money">${yen(row.amount)}</strong>
+      ${row.payment?button('✓','undo-fixed-payment',row.payment.id,'fixed-check paid','撤回'+row.description+'的付款确认'):button('✓','fixed-payment',row.id,'fixed-check','标记'+row.description+'已付款')}</div>
+      ${row.payment?`<p class="muted">实付 ${yen(row.payment.amount)} · ${fmtDate(row.payment.date)}</p>`:
+        `<div class="actions">${button('编辑计划','fixed-plan',row.id)}</div>`}</div>`).join('')||'<p class="empty">暂无预计扣款</p>'}</div></section>`
+}
+function allocationRows(records) {
+  return ordered(records).map(row=>`<div class="row"><div><strong>${esc(row.description)}</strong><small>${fmtDate(row.date)}</small></div>${button(yen(row.amount),'section-record',row.id,'money')}</div>`).join('')
 }
 function sectionPage(b,id) {
   const section=sections[id]
   const {actual,goal,records}=sectionTotal(b,id,data)
+  const plan=id==='fixed'?fixedPlanSummary(b,data):null
   return `<h1>${section.label}</h1><div class="panel overview-card">
-    ${progress(section.label,actual,goal?.amount,section.actual)}
+    ${progress(section.label,actual,goal?.amount??(plan?.expected||undefined),section.actual)}
     <div class="actions">${button(goal?'修改'+section.target:'设置'+section.target,'section-goal',id)}</div>
-  </div><section class="section"><div class="sectionhead"><h2>本期记录</h2>${button('记一笔','section-record','','primary')}</div>
-  <div class="panel">${ordered(records).map(row=>`<div class="row"><div><strong>${esc(row.description)}</strong><small>${fmtDate(row.date)}</small></div>${button(yen(row.amount),'section-record',row.id,'money')}</div>`).join('')||'<p class="empty">暂无记录</p>'}</div></section>`
+  </div>${plan?fixedPlansPanel(plan)+legacyFixedPayments(records):`<section class="section"><div class="sectionhead"><h2>本期记录</h2>${button('记一笔','section-record','','primary')}</div>
+  <div class="panel">${allocationRows(records)||'<p class="empty">暂无记录</p>'}</div></section>`}`
+}
+function legacyFixedPayments(records) {
+  const rows=records.filter(row=>!row.planId)
+  return rows.length?`<details class="panel"><summary>以前手动录入的付款</summary>${allocationRows(rows)}</details>`:''
 }
 function home(b) {
   const totals=summarize(b,data)
@@ -187,15 +208,14 @@ function weeklyPanel(b) {
       <h3>第 ${i+1} 周 · ${dateRange(w.start,w.end)}</h3>${weekFacts(w)}
       <p class="muted">${Object.entries(w.categories).filter(([,n])=>n>0).map(([name,n])=>name+' '+yen(n)).join(' · ')||'暂无分类支出'}</p>
       ${button('','week-details',w.start,'card-target','打开第 '+(i+1)+' 周消费记录')}
-      <div class="actions">${button(w.planned===undefined?'设置预算':'修改预算','week-budget',w.start)}
-      ${button('＋ 记一笔','week-expense',w.start)}</div></article>`).join('')}</div>`
+      <div class="actions">${button(w.planned===undefined?'设置预算':'修改预算','week-budget',w.start)}</div></article>`).join('')}</div>`
 }
 function weekPage(b) {
   const w=weeks(b,data).find(row=>row.start===weekStart)
   if(!w) return '<p class="panel empty">当前账期没有这一周。</p>'
   const rows=summarize(b,data).expenses.filter(t=>t.date>=w.start&&t.date<=w.end)
   return `<h1>每周消费 · ${dateRange(w.start,w.end)}</h1><div class="panel">${weekFacts(w)}
-    <div class="actions">${button('＋ 记一笔','week-expense',w.start,'primary')}${button(w.planned===undefined?'设置预算':'修改预算','week-budget',w.start)}</div>
+    <div class="actions">${button(w.planned===undefined?'设置预算':'修改预算','week-budget',w.start)}</div>
     </div><section class="section"><h2>消费记录</h2><div class="panel">${transactionRows(ordered(rows))}</div></section>`
 }
 function budgetPage(b) {
@@ -206,7 +226,7 @@ function budgetPage(b) {
     <div class="row"><div>预留后预算</div><strong class="money">${yen(b.totalAmount-totals.outstanding)}</strong></div>
     <div class="row"><div>扣除支出后的可用金额</div><strong class="money">${yen(totals.available)}</strong></div>
     ${livingProgress(b,totals)}`,true)}
-  <div class="actions">${button('＋ 记一笔','living-expense','','primary')}${button('＋ 添加预留','reservation')}</div>
+  <div class="actions">${button('＋ 添加预留','reservation')}</div>
   ${disclosure('reservations','预留项目',reservationsPanel(totals),true)}
   ${disclosure('weekly','每周支出',weeklyPanel(b),true)}
   ${b.startDate===initial?`<section class="section"><h2>初始资金计划</h2><div class="panel line">
@@ -346,6 +366,7 @@ function sectionRecord(id) {
   const b=selectedBudget()
   const section=tab
   const row=data.allocations.find(x=>x.id===id)
+  if(row?.planId) throw Error('已付款的固定费用不可编辑')
   const now=today()
   const date=row?.date||(now>=b.startDate&&now<=b.endDate?now:b.startDate)
   show(row?'编辑记录':'记录'+sections[section].label,`<label>说明<input name="description" maxlength="140" value="${esc(row?.description)}" required></label>
@@ -354,10 +375,43 @@ function sectionRecord(id) {
     ${row?button('删除记录','delete-allocation',row.id,'danger'):''}`,form=>
     save(current=>{
       if(id&&!current.allocations.some(x=>x.id===id)) throw Error('此记录已在其他窗口删除')
-      const entry={id:id||crypto.randomUUID(),kind:'record',budgetId:b.id,section,amount:Number(form.get('amount')),
+      const latest=current.allocations.find(x=>x.id===id)
+      if(latest?.planId) throw Error('已付款的固定费用不可编辑')
+      const entry={...latest,id:id||crypto.randomUUID(),kind:'record',budgetId:b.id,section,amount:Number(form.get('amount')),
         description:String(form.get('description')).trim(),date:form.get('date'),createdAt:row?.createdAt||stamp()}
       return {...current,allocations:upsert(current.allocations,entry)}
     },'记录已保存'))
+}
+function fixedPlanEditor(id) {
+  const b=selectedBudget()
+  const {plans}=fixedPlanSummary(b,data)
+  const plan=plans.find(row=>row.id===id)
+  if(plan?.payment) throw Error('已付款的固定费用不可编辑')
+  const now=today()
+  const date=plan?.date||(now>=b.startDate&&now<=b.endDate?now:b.startDate)
+  show(plan?'编辑预计扣款':'添加预计扣款',`<label>项目名称<input name="description" maxlength="140" placeholder="例如：话费、贷款" value="${esc(plan?.description)}" required></label>
+    <div class="fields"><label>预计金额（日元）<input name="amount" type="number" inputmode="numeric" min="1" step="1" value="${plan?.amount??''}" required></label>
+    <label>预计扣款日期<input name="date" type="date" min="${b.startDate}" max="${b.endDate}" value="${date}" required></label></div>
+    <p class="muted">此项目属于本账期。打勾后计入实际支出，再点绿勾可以撤回付款。</p>
+    ${plan&&!plan.payment?button('删除计划','delete-fixed-plan',plan.id,'danger'):''}`,form=>
+    save(current=>{
+      const previous=current.allocations.find(row=>row.id===id&&row.kind==='plan')
+      if(id&&!previous) throw Error('此预计扣款已移除')
+      if(id&&current.allocations.some(row=>row.kind==='record'&&row.planId===id)) throw Error('已付款的固定费用不可编辑')
+      const entry={...previous,id:id||crypto.randomUUID(),kind:'plan',section:'fixed',budgetId:b.id,
+        description:String(form.get('description')).trim(),amount:Number(form.get('amount')),date:form.get('date')}
+      return {...current,allocations:upsert(current.allocations,entry)}
+    },'预计扣款已保存'))
+}
+function markFixedPaid(id) {
+  return save(current=>{
+    const plan=current.allocations.find(row=>row.id===id&&row.kind==='plan'&&row.section==='fixed')
+    if(!plan) throw Error('此预计扣款已移除')
+    const b=current.budgets.find(row=>row.id===plan.budgetId)
+    const now=today()
+    const date=now>=b.startDate&&now<=b.endDate?now:plan.date
+    return recordFixedPayment(current,id,{id:crypto.randomUUID(),amount:plan.amount,date,createdAt:stamp()})
+  },'已付款，已计入固定费用')
 }
 function budgetEditor() {
   const existing=selectedBudget()
@@ -543,27 +597,42 @@ document.addEventListener('click',async event=>{
       case 'edit-transaction': transactionEditor(id);break
       case 'week-details': navigate('week',id);break
       case 'week-budget': weekBudgetEditor(id);break
-      case 'week-expense': {
-        const w=weeks(selectedBudget(),data).find(row=>row.start===id)
-        if(w) transactionEditor('','',w)
-        break
-      }
       case 'period': selected=shift(selected,Number(id));filters={from:'',to:'',category:'',paymentMethod:''};render();break
       case 'initial': selected=initial;render();break
+      case 'fixed-plan': fixedPlanEditor(id);break
+      case 'fixed-payment': busy=true;await markFixedPaid(id);break
+      case 'undo-fixed-payment':
+        busy=true
+        await save(current=>undoFixedPayment(current,id),'已撤回付款')
+        break
+      case 'delete-fixed-plan':
+        if(confirm('确定删除这项预计扣款吗？')) {
+          busy=true
+          await save(current=>{
+            if(current.allocations.some(row=>row.kind==='record'&&row.planId===id)) throw Error('已确认扣款的计划必须保留')
+            return {...current,allocations:current.allocations.filter(row=>row.id!==id||row.kind!=='plan')}
+          },'预计扣款已删除')
+        }
+        break
       case 'section-goal': sectionGoal(id);break
       case 'section-record': sectionRecord(id);break
       case 'delete-allocation':
         if(confirm('确定删除这项总账数据吗？')) {
           busy=true
-          await save(current=>({...current,allocations:current.allocations.filter(row=>row.id!==id)}),'已删除')
+          await save(current=>{
+            if(current.allocations.find(row=>row.id===id)?.planId) throw Error('已付款的固定费用不可删除')
+            return {...current,allocations:current.allocations.filter(row=>row.id!==id)}
+          },'已删除')
         }
         break
       case 'edit-budget': budgetEditor();break
-      case 'living-expense': transactionEditor('');break
       case 'transaction':
         if(id) navigate('transaction',id)
-        else if(selectedBudget()&&Object.hasOwn(sections,tab)) sectionRecord('')
-        else transactionEditor(id)
+        else {
+          const b=selectedBudget()
+          const week=tab==='week'&&b?weeks(b,data).find(row=>row.start===weekStart):null
+          transactionEditor('','',week)
+        }
         break
       case 'reservation': reservationEditor(id);break
       case 'payment': transactionEditor('',id);break

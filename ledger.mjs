@@ -139,6 +139,29 @@ export function sectionTotal(b,section,data) {
   return {goal,records,actual:sum(records)}
 }
 
+export function fixedPlanSummary(b,data) {
+  const {records}=sectionTotal(b,'fixed',data)
+  const payments=new Map(records.filter(row=>row.planId).map(row=>[row.planId,row]))
+  const plans=data.allocations.filter(row=>row.budgetId===b.id&&row.section==='fixed'&&row.kind==='plan')
+    .map(row=>({...row,payment:payments.get(row.id)}))
+  return {plans,expected:sum(plans),pending:sum(plans.filter(row=>!row.payment))}
+}
+
+export function recordFixedPayment(data,planId,payment) {
+  const plan=data.allocations.find(row=>row.id===planId&&row.kind==='plan'&&row.section==='fixed')
+  if(!plan) throw Error('此预计扣款已移除')
+  if(data.allocations.some(row=>row.kind==='record'&&row.planId===planId)) throw Error('此项已确认扣款，请编辑已有记录')
+  return {...data,allocations:[...data.allocations,{
+    ...payment,kind:'record',budgetId:plan.budgetId,section:'fixed',planId,description:plan.description
+  }]}
+}
+
+export function undoFixedPayment(data,paymentId) {
+  const payment=data.allocations.find(row=>row.id===paymentId&&row.kind==='record'&&row.section==='fixed'&&row.planId)
+  if(!payment) throw Error('这笔确认付款已撤回或不存在')
+  return {...data,allocations:data.allocations.filter(row=>row!==payment)}
+}
+
 export function validate(data) {
   for(const key of stores) {
     if(!Array.isArray(data?.[key])) throw Error('缺少数据表 '+key)
@@ -177,9 +200,18 @@ export function validate(data) {
        (t.reservationId&&(!r||r.budgetId!==b.id||t.type!=='expense'))) throw Error('无效交易 '+t.id)
   }
   const goals=new Set()
+  const paidPlans=new Set()
+  const plansById=new Map(data.allocations.filter(row=>row.kind==='plan').map(row=>[row.id,row]))
   for(const row of data.allocations) {
     const b=budgets.get(row.budgetId)
-    if(!b||!Object.hasOwn(sections,row.section)||!amount(row.amount)||!['goal','record'].includes(row.kind)) throw Error('无效的总账记录')
+    if(!b||!Object.hasOwn(sections,row.section)||!amount(row.amount)||!['goal','record','plan'].includes(row.kind)||(row.kind==='plan'&&row.section!=='fixed')) throw Error('无效的总账记录')
+    if(row.planId) {
+      const plan=plansById.get(row.planId)
+      if(row.kind!=='record'||row.section!=='fixed'||plan?.budgetId!==b.id||paidPlans.has(row.planId)) {
+        throw Error('关联的固定费用计划无效或已确认扣款')
+      }
+      paidPlans.add(row.planId)
+    }
     if(row.kind==='goal') {
       const key=JSON.stringify([row.budgetId,row.section])
       if(goals.has(key)) throw Error('同一区块只能有一个当期目标')
@@ -191,6 +223,7 @@ export function validate(data) {
   for(const b of data.budgets) {
     summarize(b,data)
     for(const section of Object.keys(sections)) sectionTotal(b,section,data)
+    fixedPlanSummary(b,data)
   }
   return data
 }
