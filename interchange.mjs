@@ -58,7 +58,7 @@ export function previewCSV(text,data) {
   return {accepted,rejected}
 }
 export function exportBackup(data) {
-  return JSON.stringify({format:'kurashi-ledger',version:2,data},null,2)
+  return JSON.stringify({format:'kurashi-ledger',version:3,data},null,2)
 }
 export function mergeBackup(text,current) {
   const incoming=readBackup(text)
@@ -76,6 +76,7 @@ export function mergeBackup(text,current) {
 }
 export function readBackup(text) {
   const file=JSON.parse(text)
-  if(file?.format!=='kurashi-ledger'||![1,2].includes(file.version)) throw Error('不支持的备份格式或版本')
-  return validate(file.version===1?{...file.data,allocations:[]}:file.data)
+  if(file?.format!=='kurashi-ledger'||![1,2,3].includes(file.version)) throw Error('不支持的备份格式或版本')
+  if(file.version===3) return validate(file.data)
+  return validate({...file.data,...(file.version===1?{allocations:[]}:{}),salaryPlans:[]})
 }

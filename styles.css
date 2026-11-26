@@ -37,7 +37,7 @@ h3{font-size:1rem}
 .primary,.quick{background:var(--green);color:white;border-color:var(--green)}
 .danger{color:#9c3029}
 .empty{padding:22px 12px;text-align:center;color:var(--muted)}
-nav{position:fixed;inset:auto 0 0;background:#fff;border-top:1px solid var(--line);padding:6px 8px max(6px,env(safe-area-inset-bottom))}
+nav{position:fixed;z-index:3;inset:auto 0 0;background:#fff;border-top:1px solid var(--line);padding:6px 8px max(6px,env(safe-area-inset-bottom))}
 #nav{max-width:740px;margin:auto;display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
 nav button{border:0;font-size:1.25rem;padding:4px 0;min-height:52px}
 nav button span{display:block;font-size:.875rem}
@@ -116,3 +116,25 @@ progress::-moz-progress-bar{background:var(--green);border-radius:8px}
 .fixed-plan-row .actions{gap:8px}
 .fixed-check{display:grid;place-items:center;flex:0 0 44px;width:44px;height:44px;padding:0;color:var(--green);border:1px solid var(--green);border-radius:12px;font-size:1.25rem;font-weight:700}
 .fixed-check.paid{background:var(--green);color:#fff}
+
+.salary-breakdown{display:grid;gap:8px}
+.salary-track{height:20px;display:flex;overflow:hidden;border-radius:8px;box-shadow:inset 0 0 0 1px var(--line)}
+.salary-track span{height:100%;flex:none}
+.salary-form,.salary-items{display:grid;gap:10px}
+.salary-form fieldset{min-width:0;border:1px solid var(--line);border-radius:12px;padding:10px}
+.salary-form legend{font-weight:700}
+.salary-form fieldset>.salary-items:not(:empty){margin-bottom:8px}
+.salary-form details>label{margin-top:8px}
+.salary-form .ledger-disclosure{margin-top:0}
+.salary-detail{display:grid;grid-template-columns:minmax(0,1fr) minmax(85px,.65fr);gap:8px}
+.salary-detail .actions{grid-column:1/-1;margin-top:0}
+.salary-warnings{margin:8px 0 0;padding-inline-start:24px;color:#80521e}
+.inline-check{display:flex;align-items:center}
+.inline-check input{width:20px;min-height:20px}
+.expense-row{justify-content:flex-start}
+.expense-row .expense-copy{flex:1;min-width:0;overflow-wrap:anywhere}
+.expense-icon{width:20px;height:20px;flex:0 0 20px;margin:0 4px;color:#697670}
+.expense-row .reservation-tag{font-size:12px;color:#777}
+
+.living-legend.compact-legend{display:flex;flex-wrap:wrap;gap:6px 12px}
+.compact-legend li{display:flex;align-items:center;gap:5px;white-space:nowrap}

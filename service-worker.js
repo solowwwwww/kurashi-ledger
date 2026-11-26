@@ -1,9 +1,9 @@
 const scope = new URL(self.registration.scope)
 const prefix = 'kurashi-ledger-shell-' + scope.pathname + ':'
-const cacheName = prefix + '10'
+const cacheName = prefix + '14'
 const assets = [
   './index.html','./styles.css','./app.js','./ledger.mjs','./storage.mjs',
-  './interchange.mjs','./manifest.webmanifest','./icon-192.png','./icon-512.png'
+  './interchange.mjs','./salary.mjs','./salary-view.mjs','./expense-icons.mjs','./manifest.webmanifest','./icon-192.png','./icon-512.png'
 ]
 const paths = new Set(assets.map(asset=>new URL(asset,scope).pathname))
 

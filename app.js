@@ -1,4 +1,7 @@
-import {categories,methods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation,fixedPlanSummary,recordFixedPayment,undoFixedPayment} from './ledger.mjs'
+import {expenseIcon} from './expense-icons.mjs'
+import {detailsTotal} from './salary.mjs'
+import {salaryPlan,salaryBar,salaryOverview,fixedChange,salaryForm,savedSalaryResult,readSalaryForm,renderSalaryResult,salaryWarnings,salaryCommand,salaryDetails,salaryDetailsEditor,formDetails} from './salary-view.mjs'
+import {categories,methods,historicalMethods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation,fixedPlanSummary,recordFixedPayment,undoFixedPayment,ordinaryTransactions,copyFixedPlans,applySalaryPlan,expenseReport} from './ledger.mjs'
 import {openLedger,access} from './storage.mjs'
 import {exportCSV,previewCSV,exportBackup,mergeBackup,readBackup} from './interchange.mjs'
 
@@ -11,6 +14,7 @@ const button=(label,action,id='',style='',aria='')=>`<button type="button" class
 const option=(value,label,selected)=>`<option value="${esc(value)}" ${value===selected?'selected':''}>${esc(label)}</option>`
 const select=(name,values,selected)=>`<select name="${name}">${values.map(([value,label])=>option(value,label,selected)).join('')}</select>`
 const opts=values=>values.map(value=>[value,value])
+const categoryOptions=categories.map(value=>[value,value==='家居'?'日用品':value])
 const dateLabel=d=>d.slice(5).replace('-','月')+'日'
 const dateRange=(start,end)=>`${dateLabel(start)} – ${dateLabel(end)}`
 const plannedStatus={planned:'待付款',partial:'部分付款',paid:'已付清',cancelled:'已取消',closed:'已结束'}
@@ -22,8 +26,10 @@ let route={ledger:true,tab:'home',weekStart:'',itemId:'',depth:0,key:crypto.rand
 let movingBack=false
 const scrollPositions=new Map()
 const opened=new Map()
-const disclosure=(id,heading,body,defaultOpen=false)=> {
-  const key=JSON.stringify([selected,id])
+const salaryDisclosure='salary-settings'
+const salaryDrafts=new Map()
+const disclosure=(id,heading,body,defaultOpen=false,scope=selected)=> {
+  const key=JSON.stringify([scope,id])
   return `<details class="ledger-disclosure" data-disclosure="${esc(key)}" ${(opened.get(key)??defaultOpen)?'open':''}><summary>${heading}</summary>${body}</details>`
 }
 let filters={from:'',to:'',category:'',paymentMethod:''}
@@ -41,8 +47,12 @@ function ordered(rows) {
   return [...rows].sort((a,b)=>b.date.localeCompare(a.date)||(b.createdAt??'').localeCompare(a.createdAt??'')||b.id.localeCompare(a.id))
 }
 function transactionRows(rows) {
-  return rows.length?rows.map(t=>`<div class="row"><div><strong>${esc(t.description|| (t.type==='transfer'?'转账':t.category))}</strong><small>${fmtDate(t.date)} · ${esc(t.paymentMethod)} · ${t.type==='transfer'?'转账':esc(t.category)}</small></div>
-    ${button((t.type==='expense'?'−':'')+yen(t.amount),'transaction',t.id,'money')}</div>`).join(''):'<p class="empty">暂无交易</p>'
+  const closed=new Map(data.reservations.filter(r=>r.status==='closed').map(r=>[r.id,r.name]))
+  return rows.length?rows.map(t=>`<div class="row expense-row">${expenseIcon(t.category)}
+    <div class="expense-copy"><strong>${esc(t.description||(t.type==='transfer'?'转账':t.category==='家居'?'日用品':t.category))}</strong>
+    <small>${fmtDate(t.date)} · ${t.type==='fixed'?'固定费用':`${esc(t.paymentMethod)} · ${t.type==='transfer'?'转账':esc(t.category==='家居'?'日用品':t.category)}`}</small>
+    ${closed.has(t.reservationId)?`<small class="reservation-tag">#${esc(closed.get(t.reservationId))}</small>`:''}</div>
+    ${t.type==='fixed'?`<strong class="money">−${yen(t.amount)}</strong>`:button((t.type==='expense'?'−':'')+yen(t.amount),'transaction',t.id,'money')}</div>`).join(''):'<p class="empty">暂无交易</p>'
 }
 function period() {
   const b=budget(selected)
@@ -59,7 +69,7 @@ function progress(label,actual,target,description) {
 }
 const spendingColors = {
   餐饮:'#22A06B', 交通:'#4B8AE8', 娱乐:'#9564D4', 家居:'#E8A44B',
-  购物:'#E879A5', 健身:'#36B8B0', 其他:'#64748B'
+  购物:'#E879A5', 健身:'#36B8B0', 医疗:'#E57373', 其他:'#64748B'
 }
 const reservedOutline = '<svg class="reserve-outline" aria-hidden="true"><path fill="none" stroke="#8B949E" stroke-width="2" stroke-dasharray="6 4"/></svg>'
 const outlineObserver = new ResizeObserver(entries=>{
@@ -75,7 +85,7 @@ const outlineObserver = new ResizeObserver(entries=>{
     path.setAttribute('d',`M 1 1 H ${w-1-r} Q ${w-1} 1 ${w-1} ${1+r} V ${h-1-r} Q ${w-1} ${h-1} ${w-1-r} ${h-1} H 1 Z`)
   }
 })
-function livingProgress(b,totals) {
+function livingProgress(b,totals,compact=false) {
   const {items,actualOverrun,actualOverrunPercent,availableShortfall}=livingBreakdown(b.totalAmount,totals)
   const label=item=>item.kind==='spent'?(item.category==='家居'?'日用品':item.category):item.kind==='available'?'未分配可用':'未支付预留'
   const color=item=>item.kind==='spent'?`--segment-color:${spendingColors[item.category]};`:''
@@ -84,9 +94,9 @@ function livingProgress(b,totals) {
       ${items.filter(item=>item.width>0).map(item=>`<span class="segment ${item.kind}" style="${color(item)}width:${item.width}%">${item.kind==='reserved'?reservedOutline:''}</span>`).join('')}
       ${actualOverrun?'<span class="actual-overrun-mark"></span>':''}
     </div>
-    <ul class="living-legend" aria-label="生活费预算构成">
+    <ul class="living-legend ${compact?'compact-legend':''}" aria-label="生活费预算构成">
       ${items.map(item=>`<li><span class="legend-mark ${item.kind}" style="${color(item)}" aria-hidden="true">${item.kind==='reserved'?reservedOutline:''}</span>
-      <span>${label(item)}</span><strong>${yen(item.amount)}</strong><span class="legend-percent">${item.percent===null?'—':item.percent.toFixed(2)+'%'}</span></li>`).join('')}
+      <span>${label(item)}</span>${compact?'':`<strong>${yen(item.amount)}</strong><span class="legend-percent">${item.percent===null?'—':item.percent.toFixed(2)+'%'}</span>`}</li>`).join('')}
     </ul>
     ${actualOverrun?`<p class="actual-overrun">超支 ${yen(actualOverrun)}${actualOverrunPercent===null?'':`（${actualOverrunPercent.toFixed(2)}%）`}</p>`:
       availableShortfall?`<p class="available-shortfall">可支配余额不足 ${yen(availableShortfall)}</p>`:''}
@@ -97,21 +107,26 @@ function overviewCard(id,label,content) {
     <button type="button" class="card-target" aria-label="打开${label}详情" data-action="tab" data-id="${id}"></button></article>`
 }
 function sectionsOverview(b,totals) {
+  const salary=salaryOverview(b,data)
   return `<section class="section"><h2>账期总览</h2><div class="overview">
-    ${overviewCard('budget','生活费',`<p class="muted">本期预算 ${yen(b.totalAmount)}</p>${livingProgress(b,totals)}`)}
-    ${Object.entries(sections).map(([id,section])=>{
+    ${overviewCard('income','工资收入',`<p class="muted">已到账 <strong>${yen(salary.income)}</strong></p>${salaryBar(salary.income,salary.parts,true)}
+      ${salary.needsConfirmation?'<p class="available-shortfall">固定支出已变更，待重新确认分配</p>':''}`)}
+    ${overviewCard('budget','生活费',`<p class="muted">本期预算 ${yen(b.totalAmount)}</p>${livingProgress(b,totals,true)}`)}
+    ${Object.entries(sections).filter(([id])=>id!=='income').map(([id,section])=>{
       const {actual,goal}=sectionTotal(b,id,data)
-      const plan=id==='fixed'?fixedPlanSummary(b,data):null
-      return overviewCard(id,section.label,progress(section.label,actual,goal?.amount??(plan?.expected||undefined),section.actual)+
-        (plan?.plans.length?`<p class="muted">预计扣款 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>`:''))
+      const fixed=id==='fixed'?fixedPlanSummary(b,data):null
+      const locked=salaryPlan(b,data)
+      const target=fixed?fixed.expected||undefined:locked?detailsTotal(locked[id])||undefined:goal?.amount
+      return overviewCard(id,section.label,progress(section.label,actual,target,section.actual)+
+        (fixed?.plans.length?`<p class="muted">预计扣款 ${yen(fixed.expected)} · 待扣款 ${yen(fixed.pending)}</p>`:''))
     }).join('')}</div></section>`
 }
 function fixedPlansPanel(plan) {
   const rows=[...plan.plans].sort((a,b)=>a.date.localeCompare(b.date)||a.description.localeCompare(b.description,'zh-CN'))
   return `<section class="section"><div class="sectionhead"><h2>预计扣款</h2>${button('＋ 添加预计扣款','fixed-plan','','primary')}</div>
-    <div class="panel"><p class="muted">本期预计 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>
+    <div class="panel"><div class="actions">${button('沿用上月项目','copy-fixed-plans')}</div><p class="muted">本期预计 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>
     ${rows.map(row=>`<div class="fixed-plan-row">
-      <div class="row"><div><strong>${esc(row.description)}</strong><small>预计 ${fmtDate(row.date)} · ${row.payment?'已付款':row.date<today()?'已过预计日期 · 待付款':'待付款'}</small></div>
+      <div class="row"><div><strong>${esc(row.description)}</strong><small>预计 ${fmtDate(row.date)} · ${row.beforeIncome?'工资到账前已扣 · ':''}${row.payment?'已付款':row.date<today()?'已过预计日期 · 待付款':'待付款'}</small></div>
       <strong class="money">${yen(row.amount)}</strong>
       ${row.payment?button('✓','undo-fixed-payment',row.payment.id,'fixed-check paid','撤回'+row.description+'的付款确认'):button('✓','fixed-payment',row.id,'fixed-check','标记'+row.description+'已付款')}</div>
       ${row.payment?`<p class="muted">实付 ${yen(row.payment.amount)} · ${fmtDate(row.payment.date)}</p>`:
@@ -123,12 +138,21 @@ function allocationRows(records) {
 function sectionPage(b,id) {
   const section=sections[id]
   const {actual,goal,records}=sectionTotal(b,id,data)
-  const plan=id==='fixed'?fixedPlanSummary(b,data):null
-  return `<h1>${section.label}</h1><div class="panel overview-card">
-    ${progress(section.label,actual,goal?.amount??(plan?.expected||undefined),section.actual)}
-    <div class="actions">${button(goal?'修改'+section.target:'设置'+section.target,'section-goal',id)}</div>
-  </div>${plan?fixedPlansPanel(plan)+legacyFixedPayments(records):`<section class="section"><div class="sectionhead"><h2>本期记录</h2>${button('记一笔','section-record','','primary')}</div>
-  <div class="panel">${allocationRows(records)||'<p class="empty">暂无记录</p>'}</div></section>`}`
+  const fixed=id==='fixed'?fixedPlanSummary(b,data):null
+  const locked=salaryPlan(b,data)
+  if(fixed) return `<h1>${section.label}</h1><div class="panel overview-card">${progress(section.label,actual,fixed.expected||undefined,section.actual)}
+    ${fixedChange(b,data)}</div>${fixedPlansPanel(fixed)}${legacyFixedPayments(records)}`
+  const isIncome=id==='income'
+  const target=locked&&!isIncome?detailsTotal(locked[id]):goal?.amount
+  return `<h1>${section.label}</h1>${isIncome?savedSalaryResult(b,data):`<div class="panel overview-card">
+    ${progress(section.label,actual,target||undefined,section.actual)}
+    ${salaryDetailsEditor(b,data,id)}
+    <div class="actions">${button('前往工资分配','salary-settings')}
+    ${!locked&&goal?button('修改旧版目标','section-goal',id):''}</div>
+  </div>`}<section class="section"><div class="sectionhead"><h2>本期记录</h2>${button('记一笔','section-record','','primary')}</div>
+  ${isIncome&&locked?'<p class="muted">工资分配以已确认的到账金额为准；以下保留原有录入记录。</p>':''}
+  ${isIncome&&goal?`<div class="row"><span>旧版预计收入 ${yen(goal.amount)}</span>${button('修改旧版目标','section-goal',id)}</div>`:''}
+  <div class="panel">${allocationRows(records)||'<p class="empty">暂无记录</p>'}</div></section>`
 }
 function legacyFixedPayments(records) {
   const rows=records.filter(row=>!row.planId)
@@ -139,20 +163,20 @@ function home(b) {
   return `<section class="hero"><h1>可用生活费</h1><div class="big">${yen(totals.available)}</div><p class="muted">本期预算 ${yen(b.totalAmount)}</p>
   <div class="figures"><div><span class="muted">实际支出</span><strong>${yen(totals.actual)}</strong></div><div><span class="muted">待付预留</span><strong>${yen(totals.outstanding)}</strong></div></div></section>
   ${sectionsOverview(b,totals)}
-  <section class="section"><div class="sectionhead"><h2>最近交易</h2>${button('全部明细','tab','records')}</div><div class="panel">${transactionRows(ordered(data.transactions.filter(t=>t.budgetId===b.id)).slice(0,5))}</div></section>`
+  <section class="section"><div class="sectionhead"><h2>最近交易</h2>${button('全部明细','tab','records')}</div><div class="panel">${transactionRows(ordered(ordinaryTransactions(data.transactions.filter(t=>t.budgetId===b.id),data)).slice(0,5))}</div></section>`
 }
 function records(b) {
-  const rows=ordered(data.transactions.filter(t=>t.budgetId===b.id&&
-    (!filters.from||t.date>=filters.from)&&(!filters.to||t.date<=filters.to)&&
-    (!filters.category||t.category===filters.category)&&(!filters.paymentMethod||t.paymentMethod===filters.paymentMethod)))
-  const totals=summarize(b,{...data,transactions:rows,reservations:[]})
+  const {actual,rows}=expenseReport(b,data,filters)
   return `<h1>交易明细</h1><div class="panel filters" id="filters"><label>起始日期<input type="date" name="from" value="${esc(filters.from)}"></label>
     <label>结束日期<input type="date" name="to" value="${esc(filters.to)}"></label>
-    <label>类别${select('category',[['','全部类别'],...opts(categories)],filters.category)}</label>
-    <label>付款方式${select('paymentMethod',[['','全部方式'],...opts(methods)],filters.paymentMethod)}</label></div>
-    <section class="section"><div class="sectionhead"><h2>实际支出</h2><strong class="money">${yen(totals.actual)}</strong></div>
-    <div class="panel">${transactionRows(rows)}</div></section>
-    <section class="section"><h2>分类支出</h2><div class="panel">${categories.map(c=>`<div class="row"><span>${c}</span><strong class="money">${yen(totals.expenses.filter(t=>t.category===c).reduce((n,t)=>n+t.amount,0))}</strong></div>`).join('')}</div></section>`
+    <label>类别${select('category',[['','全部类别'],...categoryOptions,['固定费用','固定费用']],filters.category)}</label>
+    <label>付款方式${select('paymentMethod',[['','全部方式'],...opts([...methods,...historicalMethods])],filters.paymentMethod)}</label></div>
+    <section class="section"><div class="sectionhead"><h2>总支出</h2><strong class="money">${yen(actual)}</strong></div>
+    <div class="panel">${transactionRows(ordered(rows))}</div></section>`
+}
+function categoryBreakdown(totals) {
+  return `<section class="section"><h2>分类支出</h2><div class="panel">${categories.map(c=>
+    `<div class="row"><span>${c==='家居'?'日用品':c}</span><strong class="money">${yen(totals[c])}</strong></div>`).join('')}</div></section>`
 }
 function reservationFacts(r) {
   return `<dl class="budget-facts"><div><dt>原始预留</dt><dd>${yen(r.plannedAmount)}</dd></div>
@@ -196,7 +220,7 @@ function weekFacts(w) {
   const known=w.planned!==undefined
   const percent=w.planned>0?(w.actual/w.planned*100).toFixed(1)+'%':w.planned===0&&w.actual===0?'0%':'—'
   return `<dl class="budget-facts"><div><dt>周预算</dt><dd>${known?yen(w.planned):'未设置'}</dd></div>
-    <div><dt>实际支出</dt><dd>${yen(w.actual)}</dd></div>
+    <div><dt>生活支出</dt><dd>${yen(w.actual)}</dd></div>
     <div><dt>${known&&w.remaining<0?'超支':'剩余'}</dt><dd class="${known&&w.remaining<0?'error':''}">${known?yen(Math.abs(w.remaining)):'—'}</dd></div>
     <div><dt>使用比例</dt><dd>${percent}</dd></div></dl>`
 }
@@ -216,26 +240,30 @@ function weekPage(b) {
   const rows=summarize(b,data).expenses.filter(t=>t.date>=w.start&&t.date<=w.end)
   return `<h1>每周消费 · ${dateRange(w.start,w.end)}</h1><div class="panel">${weekFacts(w)}
     <div class="actions">${button(w.planned===undefined?'设置预算':'修改预算','week-budget',w.start)}</div>
-    </div><section class="section"><h2>消费记录</h2><div class="panel">${transactionRows(ordered(rows))}</div></section>`
+    </div><section class="section"><h2>消费记录</h2><div class="panel"> ${transactionRows(ordered(ordinaryTransactions(rows,data)))}</div></section>${categoryBreakdown(w.categories)}`
 }
 function budgetPage(b) {
   const totals=summarize(b,data)
   return `<h1>生活费预算</h1>
-  ${disclosure('living-summary','生活费总览',`<div class="row"><div>预算总额 <strong class="money">${yen(b.totalAmount)}</strong></div>${button('修改','edit-budget')}</div>
+  ${disclosure('living-summary','生活费总览',`<div class="row"><div>预算总额 <strong class="money">${yen(b.totalAmount)}</strong></div>${salaryPlan(b,data)?button('调整工资分配','salary-settings'):button('修改','edit-budget')}</div>
     <div class="row"><div>实际支出</div><strong class="money">${yen(totals.actual)}</strong></div>
     <div class="row"><div>预留后预算</div><strong class="money">${yen(b.totalAmount-totals.outstanding)}</strong></div>
     <div class="row"><div>扣除支出后的可用金额</div><strong class="money">${yen(totals.available)}</strong></div>
     ${livingProgress(b,totals)}`,true)}
-  <div class="actions">${button('＋ 添加预留','reservation')}</div>
+  <div class="actions">${button('＋ 记一笔','living-expense','','primary')}${button('＋ 添加预留','reservation')}</div>
   ${disclosure('reservations','预留项目',reservationsPanel(totals),true)}
   ${disclosure('weekly','每周支出',weeklyPanel(b),true)}
+  ${disclosure('living-records','消费明细',transactionRows(ordered(ordinaryTransactions(totals.expenses,data))),true)}
   ${b.startDate===initial?`<section class="section"><h2>初始资金计划</h2><div class="panel line">
   <p>计划取现 ¥44,500，热海活动预留现金 ¥13,000，剩余日用现金 ¥31,500。</p>
   <p>蛋白粉计划线上支付 ¥5,500，银行另留生活费 ¥4,305。</p>
   <p>台湾旅行预算 ¥40,000，单独列示。</p></div></section>`:''}`
 }
-function settings() {
-  return `<h1>设置</h1><section class="panel"><h2>备份与恢复</h2><p class="line muted">账本保存在当前浏览器。清除网站数据可能删除记录，请定期保存完整备份。</p>
+function settings(b) {
+  return `<h1>设置</h1>
+  ${disclosure(salaryDisclosure,'工资分配',period()+(b?salaryForm(b,data,salaryDrafts.get(b.id)):
+    `<p class="muted">先建立本期预算，再设置工资分配。</p>${button('建立本期预算','edit-budget')}`),false,'settings')}
+  <section class="panel"><h2>备份与恢复</h2><p class="line muted">账本保存在当前浏览器。清除网站数据可能删除记录，请定期保存完整备份。</p>
   <div class="actions">${button('下载完整备份','backup','','primary')}${button('恢复备份','restore')}</div></section>
   <section class="panel"><h2>交易 CSV</h2><p class="line muted">导出全部账期的交易。导入时会预览有效交易并跳过重复 ID。</p><div class="actions">${button('导出 CSV','export')}${button('导入 CSV','import')}</div></section>
   <section class="panel"><h2>添加到主屏幕</h2><p class="line muted">使用 iPhone Safari 打开网页，点按共享，再选择「添加到主屏幕」。首次在线打开并加载完成后，即可离线记账。</p><p id="offline" class="line muted"></p></section>`
@@ -246,8 +274,14 @@ function render() {
     if(item.dataset.id===tab) item.setAttribute('aria-current','page')
     else item.removeAttribute('aria-current')
   }
-  if(tab==='settings') {app.innerHTML=settings();updateOffline();return}
   const b=selectedBudget()
+  if(tab==='settings') {
+    app.innerHTML=settings(b)
+    const salary=app.querySelector('#salary-form')
+    if(salary) renderSalaryResult(salary,b,data)
+    updateOffline()
+    return
+  }
   if(tab==='transaction') {app.innerHTML=transactionPage();return}
   app.innerHTML=(tab==='week'||tab==='reservation'?'':period())+(!b?`<section class="panel empty"><h1>本期尚未建立预算</h1><div class="actions" style="justify-content:center">${button('建立本期预算','edit-budget','','primary')}${getBudget(data,initial)?button('查看初始账期','initial'):''}</div></section>`:
     tab==='home'?home(b):tab==='records'?records(b):tab==='week'?weekPage(b):tab==='reservation'?reservationPage(b):Object.hasOwn(sections,tab)?sectionPage(b,tab):budgetPage(b))
@@ -392,6 +426,7 @@ function fixedPlanEditor(id) {
   show(plan?'编辑预计扣款':'添加预计扣款',`<label>项目名称<input name="description" maxlength="140" placeholder="例如：话费、贷款" value="${esc(plan?.description)}" required></label>
     <div class="fields"><label>预计金额（日元）<input name="amount" type="number" inputmode="numeric" min="1" step="1" value="${plan?.amount??''}" required></label>
     <label>预计扣款日期<input name="date" type="date" min="${b.startDate}" max="${b.endDate}" value="${date}" required></label></div>
+    <label class="inline-check"><input name="beforeIncome" type="checkbox" ${plan?.beforeIncome?'checked':''}>工资到账前已扣（工资分配中不再扣除）</label>
     <p class="muted">此项目属于本账期。打勾后计入实际支出，再点绿勾可以撤回付款。</p>
     ${plan&&!plan.payment?button('删除计划','delete-fixed-plan',plan.id,'danger'):''}`,form=>
     save(current=>{
@@ -399,7 +434,7 @@ function fixedPlanEditor(id) {
       if(id&&!previous) throw Error('此预计扣款已移除')
       if(id&&current.allocations.some(row=>row.kind==='record'&&row.planId===id)) throw Error('已付款的固定费用不可编辑')
       const entry={...previous,id:id||crypto.randomUUID(),kind:'plan',section:'fixed',budgetId:b.id,
-        description:String(form.get('description')).trim(),amount:Number(form.get('amount')),date:form.get('date')}
+        description:String(form.get('description')).trim(),amount:Number(form.get('amount')),date:form.get('date'),beforeIncome:form.has('beforeIncome')}
       return {...current,allocations:upsert(current.allocations,entry)}
     },'预计扣款已保存'))
 }
@@ -419,6 +454,7 @@ function budgetEditor() {
   show(existing?'修改预算':'建立预算',`<label>预算总额（日元）<input name="total" type="number" inputmode="numeric" min="0" step="1" value="${existing?.totalAmount??''}" required></label>`,form=>
     save(current=>{
       const old=getBudget(current,start)
+      if(old&&salaryPlan(old,current)) throw Error('请通过工资分配重新确认已锁定的预算')
       const row={...(old||budget(start)),totalAmount:Number(form.get('total')),updatedAt:stamp()}
       return {...current,budgets:upsert(current.budgets,row)}
     },'预算已保存'))
@@ -444,6 +480,11 @@ function reservationEditor(id) {
       if(old?.status==='closed') throw Error('已结束的预留不能修改')
       const now=stamp()
       const row={...old,id:id||crypto.randomUUID(),budgetId:b.id,name:String(form.get('name')).trim(),plannedAmount:Number(form.get('amount')),status:form.get('status'),createdAt:old?.createdAt||now,updatedAt:now}
+      const locked=salaryPlan(b,current)
+      if(locked?.special>0&&row.status!=='cancelled'&&
+        row.name.normalize('NFKC').replace(/\s+/g,'').toLowerCase()===locked.specialName.normalize('NFKC').replace(/\s+/g,'').toLowerCase()) {
+        throw Error('同名项目已计入工资特别支出，请先核对')
+      }
       return {...current,reservations:upsert(current.reservations,row)}
     },'预留已保存'))
 }
@@ -473,8 +514,8 @@ function transactionEditor(id,linked='',week=null) {
   show(old?'编辑交易':linked?'记录预留付款':'记一笔',`<div class="fields"><label>交易类型${select('type',[['expense','支出'],['transfer','转账']],old?.type||'expense')}</label>
     <label>金额（日元）<input name="amount" type="number" step="1" min="1" inputmode="numeric" required value="${old?.amount??''}"></label>
     <label>日期<input name="date" type="date" value="${date}" ${linked||week?`min="${from}" max="${to}"`: ''} required></label>
-    <label>付款方式${select('paymentMethod',opts(methods),old?.paymentMethod)}</label>
-    <label id="category-field">类别${select('category',opts(categories),old?.category)}</label>
+    <label>付款方式${select('paymentMethod',opts(old&&historicalMethods.includes(old.paymentMethod)?[...methods,old.paymentMethod]:methods),old?.paymentMethod)}</label>
+    <label id="category-field">类别${select('category',categoryOptions,old?.category)}</label>
     <label id="link-field">关联预留<select name="reservationId"></select></label></div>
     <p id="entry-hint" class="muted"></p>
     <label>说明<input name="description" maxlength="140" value="${esc(old?.description)}"></label>
@@ -584,6 +625,72 @@ app.addEventListener('change',event=>{
     app.querySelector(`[name="${name}"]`)?.focus()
   }
 })
+app.addEventListener('click',event=>{
+  const command=event.target.closest('button[data-salary-command]')
+  if(!command) return
+  salaryCommand(command)
+})
+app.addEventListener('input',event=>{
+  const form=event.target.closest('#salary-form')
+  if(form) {
+    const b=selectedBudget()
+    salaryDrafts.set(b.id,Object.fromEntries(new FormData(form)))
+    renderSalaryResult(form,b,data)
+  }
+})
+app.addEventListener('submit',async event=>{
+  const form=event.target
+  if(form.id==='salary-details-form') {
+    event.preventDefault()
+    if(busy) return
+    const section=form.dataset.section
+    const b=selectedBudget()
+    const details=formDetails(form,section)
+    const original=JSON.stringify(salaryDetails(b,data,section))
+    busy=true
+    try {
+      await save(current=>{
+        const latest=current.budgets.find(row=>row.id===b.id)
+        if(!latest||JSON.stringify(salaryDetails(latest,current,section))!==original) throw Error('明细已变更，请刷新后重试')
+        const next={...latest,salaryDetails:{...latest.salaryDetails,[section]:details}}
+        return {...current,budgets:upsert(current.budgets,next)}
+      },'预算明细已保存')
+    } catch(error) {message(error.message,true)}
+    finally {busy=false}
+    return
+  }
+  if(form.id!=='salary-form') return
+  event.preventDefault()
+  try {
+    const b=selectedBudget()
+    const {income,fixed,special,specialName,savings,investment,rules,mode,savingsTotal,calc}=readSalaryForm(form,b,data)
+    if(calc.living<0) throw Error('请先调整资金缺口，再确认分配')
+    if(savingsTotal!==calc.savings) throw Error('请在储蓄页调整明细合计，或在此选择手动金额')
+    if(special>0&&!specialName) throw Error('请填写特别支出名称')
+    const former=salaryPlan(b,data)
+    const before=salaryOverview(b,data)
+    const plan={id:b.id,income,fixed,special,specialName,savings,investment,rules,mode,living:calc.living,appliedAt:stamp()}
+    applySalaryPlan(data,plan)
+    const changes=[
+      ['到账工资',before.income,income],['生活费',b.totalAmount,calc.living],
+      ['现金储蓄',before.parts.savings,calc.savings],['投资',before.parts.investment,calc.investment],
+      ['固定支出',former?.fixed??fixed,fixed],['特别支出',before.parts.special,special]
+    ]
+    const warnings=[...calc.warnings,...salaryWarnings(b,data,calc.living)]
+    show('确认工资分配',`<div>${changes.map(([label,old,value])=>`<div class="row"><span>${label}</span><strong>${yen(old)} → ${yen(value)}</strong></div>`).join('')}</div>
+      ${warnings.length?`<ul class="salary-warnings">${warnings.map(text=>`<li>${esc(text)}</li>`).join('')}</ul>`:''}`,()=>save(current=>{
+        const currentBudget=current.budgets.find(row=>row.id===b.id)
+        if(!currentBudget||currentBudget.totalAmount!==b.totalAmount||salaryPlan(b,current)?.appliedAt!==former?.appliedAt||
+           fixedPlanSummary(currentBudget,current).afterPayroll!==fixed||
+           JSON.stringify(salaryDetails(currentBudget,current,'savings'))!==JSON.stringify(savings)||
+           JSON.stringify(salaryDetails(currentBudget,current,'investment'))!==JSON.stringify(investment)||
+           JSON.stringify(salaryWarnings(b,current,calc.living))!==JSON.stringify(salaryWarnings(b,data,calc.living))) {
+          throw Error('此账期数据已变更，请关闭窗口并重新检查分配')
+        }
+        return applySalaryPlan(current,plan)
+      },'工资分配已确认，生活费预算已更新'))
+  } catch(error) {message(error.message,true)}
+})
 document.addEventListener('click',async event=>{
   const item=event.target.closest('button[data-action]')
   if(!item||!data||busy) return
@@ -592,6 +699,10 @@ document.addEventListener('click',async event=>{
   try {
     switch(action) {
       case 'tab': navigate(id);break
+      case 'salary-settings':
+        opened.set(JSON.stringify(['settings',salaryDisclosure]),true)
+        navigate('settings')
+        break
       case 'reservation-details': navigate('reservation',id);break
       case 'close-reservation': endReservationEditor(id);break
       case 'edit-transaction': transactionEditor(id);break
@@ -599,6 +710,18 @@ document.addEventListener('click',async event=>{
       case 'week-budget': weekBudgetEditor(id);break
       case 'period': selected=shift(selected,Number(id));filters={from:'',to:'',category:'',paymentMethod:''};render();break
       case 'initial': selected=initial;render();break
+      case 'living-expense': transactionEditor('');break
+      case 'copy-fixed-plans': {
+        const b=selectedBudget()
+        let copied
+        busy=true
+        await save(current=>{
+          copied=copyFixedPlans(b,current)
+          return copied.data
+        },'')
+        message(copied.added?'已沿用 '+copied.added+' 个项目，付款状态为待付款':copied.source?'没有可补充的项目':'上一账期没有固定支出项目')
+        break
+      }
       case 'fixed-plan': fixedPlanEditor(id);break
       case 'fixed-payment': busy=true;await markFixedPaid(id);break
       case 'undo-fixed-payment':

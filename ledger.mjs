@@ -1,6 +1,8 @@
-export const categories = ['餐饮','交通','娱乐','家居','购物','健身','其他']
-export const methods = ['现金','银行卡','Suica','其他']
-export const stores = ['budgets','transactions','reservations','weeklyBudgets','allocations']
+import {validateSalary,validateAllocationDetails} from './salary.mjs'
+export const categories = ['餐饮','交通','娱乐','家居','购物','健身','医疗','其他']
+export const methods = ['现金','信用卡','PayPay','PASMO','其他']
+export const historicalMethods = ['银行卡','Suica']
+export const stores = ['budgets','transactions','reservations','weeklyBudgets','allocations','salaryPlans']
 export const sections = {
   income: {label:'工资收入', actual:'已到账', target:'预计收入'},
   fixed: {label:'固定费用', actual:'已支付', target:'费用预算'},
@@ -42,7 +44,8 @@ export function seed() {
     reservations:[['protein','REYS 乳清蛋白粉',5500],['atami','热海爵士现场',13000]].map(([id,name,plannedAmount]) =>
       ({id,budgetId:initial,name,plannedAmount,status:'planned',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()})),
     weeklyBudgets:[],
-    allocations:[]
+    allocations:[],
+    salaryPlans:[]
   }
 }
 const sum = rows => rows.reduce((total,row) => {
@@ -144,7 +147,54 @@ export function fixedPlanSummary(b,data) {
   const payments=new Map(records.filter(row=>row.planId).map(row=>[row.planId,row]))
   const plans=data.allocations.filter(row=>row.budgetId===b.id&&row.section==='fixed'&&row.kind==='plan')
     .map(row=>({...row,payment:payments.get(row.id)}))
-  return {plans,expected:sum(plans),pending:sum(plans.filter(row=>!row.payment))}
+  return {plans,expected:sum(plans),pending:sum(plans.filter(row=>!row.payment)),afterPayroll:sum(plans.filter(row=>!row.beforeIncome))}
+}
+
+export function ordinaryTransactions(rows,data) {
+  const reservations=new Map(data.reservations.map(row=>[row.id,row]))
+  return rows.filter(row=>!acceptsPayment(reservations.get(row.reservationId)))
+}
+export function expenseReport(b,data,filters={}) {
+  const inDates=row=>(!filters.from||row.date>=filters.from)&&(!filters.to||row.date<=filters.to)
+  const living=data.transactions.filter(row=>row.budgetId===b.id&&inDates(row)&&
+    (!filters.category||row.category===filters.category)&&(!filters.paymentMethod||row.paymentMethod===filters.paymentMethod))
+  const fixed=filters.paymentMethod||(filters.category&&filters.category!=='固定费用')?[]:
+    sectionTotal(b,'fixed',data).records.filter(inDates)
+  const actual=sum([...living.filter(row=>row.type==='expense'),...fixed])
+  return {actual,rows:[...ordinaryTransactions(living,data),...fixed.map(row=>({...row,type:'fixed'}))]}
+}
+export function copyFixedPlans(b,data,id=()=>crypto.randomUUID()) {
+  const previous=data.budgets.find(row=>row.startDate===shift(b.startDate,-1))
+  const source=previous?fixedPlanSummary(previous,data).plans:[]
+  const current=fixedPlanSummary(b,data).plans
+  const collected=new Set(current.map(row=>row.lineage||row.id))
+  const names=new Map()
+  const matched=new Map()
+  for(const item of current.filter(row=>!row.lineage)) {
+    const name=item.description.trim().normalize('NFKC').toLowerCase()
+    if(!names.has(name)) names.set(name,[])
+    names.get(name).push(item)
+  }
+  const rows=[]
+  for(const item of source) {
+    const lineage=item.lineage||item.id
+    const name=item.description.trim().normalize('NFKC').toLowerCase()
+    if(collected.has(lineage)) continue
+    const match=names.get(name)?.shift()
+    if(match) {
+      matched.set(match.id,lineage)
+      collected.add(lineage)
+      continue
+    }
+    const day=Number(item.date.slice(-2))
+    const month=day>=25?b.startDate.slice(0,7):b.endDate.slice(0,7)
+    const last=Number(addDays(shift(month+'-25',1).slice(0,7)+'-01',-1).slice(-2))
+    const date=month+'-'+String(Math.min(day,last)).padStart(2,'0')
+    rows.push({id:id(),kind:'plan',section:'fixed',budgetId:b.id,lineage,description:item.description,amount:item.amount,date,beforeIncome:Boolean(item.beforeIncome)})
+    collected.add(lineage)
+  }
+  const allocations=data.allocations.map(row=>matched.has(row.id)?{...row,lineage:matched.get(row.id)}:row)
+  return {data:{...data,allocations:[...allocations,...rows]},added:rows.length,source:source.length}
 }
 
 export function recordFixedPayment(data,planId,payment) {
@@ -162,6 +212,21 @@ export function undoFixedPayment(data,paymentId) {
   return {...data,allocations:data.allocations.filter(row=>row!==payment)}
 }
 
+export function applySalaryPlan(data,plan) {
+  validateSalary(plan)
+  const budget=data.budgets.find(row=>row.id===plan.id)
+  if(!budget||fixedPlanSummary(budget,data).afterPayroll!==plan.fixed) throw Error('固定支出已变更，请重新确认')
+  verifySpecialExpense(data,plan.id,plan.specialName,plan.special)
+  return {...data,salaryPlans:[...data.salaryPlans.filter(row=>row.id!==plan.id),plan],
+    budgets:data.budgets.map(row=>row.id===plan.id?{...row,totalAmount:plan.living,updatedAt:plan.appliedAt}:row)}
+}
+
+export function verifySpecialExpense(data,budgetId,name,special) {
+  const key=text=>text.normalize('NFKC').replace(/\s+/g,'').toLowerCase()
+  if(special>0&&data.reservations.some(row=>row.budgetId===budgetId&&
+    row.status!=='cancelled'&&key(row.name)===key(name))) throw Error('同名专项已在生活费预留中，请先核对以免重复占用预算')
+}
+
 export function validate(data) {
   for(const key of stores) {
     if(!Array.isArray(data?.[key])) throw Error('缺少数据表 '+key)
@@ -177,6 +242,9 @@ export function validate(data) {
   for(const b of data.budgets) {
     if(!validDate(b.startDate)||!validDate(b.endDate)||b.startDate!==cycle(b.startDate)||
        b.endDate!==budget(b.startDate).endDate||!amount(b.totalAmount,0)||starts.has(b.startDate)) throw Error('无效或重复账期')
+    for(const field of ['investment','savings']) {
+      if(b.salaryDetails?.[field]!==undefined) validateAllocationDetails(b.salaryDetails[field])
+    }
     starts.add(b.startDate)
   }
   for(const r of data.reservations) {
@@ -195,7 +263,7 @@ export function validate(data) {
     const b=budgets.get(t.budgetId)
     const r=reservations.get(t.reservationId)
     if(!b||!validDate(t.date)||t.date<b.startDate||t.date>b.endDate||!amount(t.amount)||
-       !['expense','transfer'].includes(t.type)||!methods.includes(t.paymentMethod)||
+       !['expense','transfer'].includes(t.type)||![...methods,...historicalMethods].includes(t.paymentMethod)||
        (t.type==='expense'&&!categories.includes(t.category))||
        (t.reservationId&&(!r||r.budgetId!==b.id||t.type!=='expense'))) throw Error('无效交易 '+t.id)
   }
@@ -219,6 +287,10 @@ export function validate(data) {
     } else if(!validDate(row.date)||row.date<b.startDate||row.date>b.endDate||typeof row.description!=='string'||!row.description.trim()) {
       throw Error('无效的总账日期或说明')
     }
+  }
+  for(const plan of data.salaryPlans) {
+    if(budgets.get(plan.id)?.totalAmount!==plan.living) throw Error('工资方案与已确认的生活费预算不一致')
+    validateSalary(plan)
   }
   for(const b of data.budgets) {
     summarize(b,data)
