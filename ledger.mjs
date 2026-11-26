@@ -165,7 +165,7 @@ export function expenseReport(b,data,filters={}) {
   const fixed=filters.paymentMethod||(filters.category&&filters.category!=='固定费用')?[]:
     sectionTotal(b,'fixed',data).records.filter(inDates)
   const actual=sum([...living.filter(row=>row.type==='expense'),...fixed])
-  return {actual,rows:[...ordinaryTransactions(living,data),...fixed.map(row=>({...row,type:'fixed'}))]}
+  return {actual,rows:[...living,...fixed.map(row=>({...row,type:'fixed'}))]}
 }
 export function copyFixedPlans(b,data,id=()=>crypto.randomUUID()) {
   const previous=data.budgets.find(row=>row.startDate===shift(b.startDate,-1))
@@ -253,7 +253,7 @@ export function validate(data) {
     if(!validDate(b.startDate)||!validDate(b.endDate)||b.startDate!==cycle(b.startDate)||
        b.endDate!==budget(b.startDate).endDate||!amount(b.totalAmount,0)||starts.has(b.startDate)) throw Error('无效或重复账期')
     for(const field of ['investment','savings']) {
-      if(b.salaryDetails?.[field]!==undefined) validateAllocationDetails(b.salaryDetails[field])
+      if(b.salaryDetails?.[field]!==undefined) validateAllocationDetails(b.salaryDetails[field],1)
     }
     if(b.investmentBudget!==undefined&&!amount(b.investmentBudget,0)) throw Error('投资总预算必须为非负整数日元')
     starts.add(b.startDate)
@@ -301,7 +301,7 @@ export function validate(data) {
     }
   }
   for(const plan of data.salaryPlans) {
-    if(budgets.get(plan.id)?.totalAmount!==plan.living) throw Error('工资方案与已确认的生活费预算不一致')
+    if(!budgets.has(plan.id)) throw Error('工资方案缺少对应账期')
     validateSalary(plan)
   }
   for(const b of data.budgets) {

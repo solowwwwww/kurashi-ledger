@@ -1,4 +1,4 @@
-import {yen,sectionTotal,fixedPlanSummary,summarize,weeklyAllocation} from './ledger.mjs'
+import {yen,sectionTotal,fixedPlanSummary} from './ledger.mjs'
 import {unit,defaultRules,calculateSalary,salaryDistribution,detailsTotal} from './salary.mjs'
 const shellColors={living:'#22A06B',savings:'#4B8AE8',investment:'#9564D4',fixed:'#E8A44B',special:'#8B949E',left:'#ECEDEF'}
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
@@ -15,25 +15,21 @@ export function salaryBar(income,parts,compact=false) {
 }
 export function salaryOverview(b,data) {
   const committed=salaryPlan(b,data)
-  const fixed=fixedPlanSummary(b,data).afterPayroll
-  const income=committed?.income??sectionTotal(b,'income',data).actual
-  const parts={living:b.totalAmount,fixed,special:committed?.special??0,
-    investment:committed?detailsTotal(committed.investment):detailsTotal(salaryDetails(b,data,'investment')),
-    savings:committed?detailsTotal(committed.savings):sectionTotal(b,'savings',data).goal?.amount??0}
-  return {income,parts,needsConfirmation:Boolean(committed&&committed.fixed!==fixed)}
+  const incomeRows=sectionTotal(b,'income',data)
+  const income=incomeRows.records.length?incomeRows.actual:committed?.income??0
+  const parts={living:b.totalAmount,fixed:fixedPlanSummary(b,data).afterPayroll,special:committed?.special??0,
+    investment:configuredAsset(b,data,'investment'),savings:configuredAsset(b,data,'savings')}
+  return {income,parts}
 }
-export function fixedChange(b,data) {
-  const locked=salaryPlan(b,data)
-  const fixed=fixedPlanSummary(b,data).afterPayroll
-  if(!locked || locked.fixed===fixed) return ''
-  const proposed=calculateSalary({income:locked.income,fixed,special:locked.special,
-    investment:detailsTotal(locked.investment),rules:locked.rules,
-    manualSavings:detailsTotal(locked.savings)})
-  return `<p class="available-shortfall">固定支出由 ${yen(locked.fixed)} 变为 ${yen(fixed)}，请重新确认工资分配。按原分配方式，生活费将由 ${yen(locked.living)} 变为 ${yen(proposed.living)}，现金储蓄由 ${yen(detailsTotal(locked.savings))} 变为 ${yen(proposed.savings)}。</p>`
+function configuredAsset(b,data,section) {
+  const details=salaryDetails(b,data,section)
+  const {actual}=sectionTotal(b,section,data)
+  return details.length||b.salaryDetails?.[section]!==undefined||
+    (section==='investment'&&b.investmentBudget!==undefined)?detailsTotal(details):actual
 }
 function detailRow({name='',amount=0}={}) {
   return `<div class="salary-detail"><label>项目名称<input name="itemName" value="${escape(name)}" maxlength="100" required></label>
-    <label>金额（万円）<input name="itemUnits" type="number" inputmode="numeric" value="${amount/unit}" min="0" max="${Math.floor(Number.MAX_SAFE_INTEGER/unit)}" step="1" required></label>
+    <label>金额（日元）<input name="itemAmount" type="number" inputmode="numeric" value="${amount}" min="0" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
     <div class="actions">${command('−','decrement','aria-label="减少一万日元"')}${command('＋','increment','aria-label="增加一万日元"')}${command('删除','remove')}</div></div>`
 }
 function regularSalaryPlan(b,data) {
@@ -42,12 +38,12 @@ function regularSalaryPlan(b,data) {
 }
 
 export function salaryDetails(b,data,key) {
-  if(key==='investment') {
-    const amount=b.investmentBudget??(b.salaryDetails?.investment===undefined&&salaryPlan(b,data)===undefined
-      ?sectionTotal(b,key,data).goal?.amount:undefined)
-    if(amount!==undefined) return amount===0?[]:[{name:'投资总预算',amount}]
+  if(key==='investment'&&b.investmentBudget!==undefined) {
+    return b.investmentBudget===0?[]:[{name:'投资总预算',amount:b.investmentBudget}]
   }
-  return b.salaryDetails?.[key]??regularSalaryPlan(b,data)?.[key]??[]
+  const goal=sectionTotal(b,key,data).goal
+  return b.salaryDetails?.[key]??(goal?[{name:key==='investment'?'投资目标':'储蓄目标',amount:goal.amount}]:
+    salaryPlan(b,data)?.[key]??[])
 }
 
 export function salaryDetailsEditor(b,data,key) {
@@ -56,7 +52,7 @@ export function salaryDetailsEditor(b,data,key) {
     <fieldset data-items="${key}"><legend>${label}预算明细</legend>
       <div class="salary-items">${salaryDetails(b,data,key).map(detailRow).join('')}</div>
       ${command('＋ 添加'+label+'项目','add')}</fieldset>
-    <p class="muted">保存后，设置里的工资分配会读取合计。确认分配才会更新生活费预算。</p>
+    <p class="muted">保存后更新本期目标。</p>
     <div class="actions"><button type="submit" class="primary">保存${label}明细</button></div>
   </form>`
 }
@@ -64,35 +60,32 @@ export function salaryForm(b,data,draft={}) {
   const locked=salaryPlan(b,data)
   const regular=regularSalaryPlan(b,data)
   const rules=regular?.rules??defaultRules
-  const income=draft.income??locked?.income??sectionTotal(b,'income',data).actual
-  const savedSavings=b.salaryDetails?.savings
-  const hasNewSavings=savedSavings!==undefined&&(!locked||detailsTotal(savedSavings)!==detailsTotal(locked.savings))
-  const mode=draft.mode??(hasNewSavings?'manual':regular?.mode)
+  const {income,parts}=salaryOverview(b,data)
+  const minimum=draft.minimum??rules.minimum
+  const rate=draft.rate??rules.rate
+  const floor=draft.floor??rules.floor
   const fixed=fixedPlanSummary(b,data)
   return `<div class="overview-card">
-    ${locked?'<p class="muted">当前方案已锁定。修改后需重新确认。</p>':''}
-    ${fixedChange(b,data)}
     <form id="salary-form" class="salary-form">
-      <div class="fields">${field('income','实际到账工资（日元）',income)}${field('special','特别支出（日元）',draft.special??locked?.special??0)}</div>
+      <div class="fields">${field('income','实际到账工资（日元）',draft.income??income)}${field('special','特别支出（日元）',draft.special??locked?.special??0)}</div>
       <label>特别支出名称<input name="specialName" value="${escape(draft.specialName??locked?.specialName)}" placeholder="例如：专项旅行预算" maxlength="100"></label>
       <p class="muted">特别支出请勿重复列入生活费预留。到账前已经扣除的储蓄或投资也请勿重复填写。</p>
       <div class="row"><span>固定支出（根据项目自动汇总）</span><strong>${yen(fixed.afterPayroll)}</strong></div>
       ${fixed.expected>fixed.afterPayroll?`<p class="muted">到账前已扣 ${yen(fixed.expected-fixed.afterPayroll)}，工资分配中已排除。</p>`:''}
-      <details class="ledger-disclosure"><summary>分配规则 <small>最低储蓄 ${yen(rules.minimum)} · 目标 ${rules.rate}% · 生活费保障 ${yen(rules.floor)}</small></summary>
-        ${field('minimum','最低现金储蓄（日元）',draft.minimum??rules.minimum)}<p class="muted">希望每期至少存下的现金，独立于投资。</p>
-        ${field('rate','资产积累目标比例（%）',draft.rate??rules.rate,100)}<p class="muted">现金储蓄与投资合计占到账工资的目标比例。</p>
-        ${field('floor','生活费保障线（日元）',draft.floor??rules.floor)}<p class="muted">推荐储蓄时优先保留的最低生活费。</p>
+      <details class="ledger-disclosure"><summary>分配规则 <small>最低储蓄 ${yen(Number(minimum))} · 目标 ${escape(rate)}% · 生活费保障 ${yen(Number(floor))}</small></summary>
+        ${field('minimum','最低现金储蓄（日元）',minimum)}<p class="muted">希望每期至少存下的现金，独立于投资。</p>
+        ${field('rate','资产积累目标比例（%）',rate,100)}<p class="muted">现金储蓄与投资合计占到账工资的目标比例。</p>
+        ${field('floor','生活费保障线（日元）',floor)}<p class="muted">推荐储蓄时优先保留的最低生活费。</p>
       </details>
-      <p class="muted">合理分配建议独立计算。确认本期分配时，以首页保存的预算明细和下方选择为准。</p>
-      <label>确认分配时的现金储蓄方式<select name="mode"><option value="recommended" ${mode!=='manual'?'selected':''}>按推荐金额，由我分配明细</option><option value="manual" ${mode==='manual'?'selected':''}>按我的储蓄明细合计</option></select></label>
-      <div class="salary-preview"></div>
-      <div class="actions"><button type="submit" class="primary">检查并确认分配</button></div>
+      <div class="row"><span>现有投资金额</span><strong>${yen(parts.investment)}</strong></div>
+      <div class="row"><span>实际资产积累比例</span><strong class="salary-asset-ratio">—</strong></div>
+      <div class="salary-preview" aria-live="polite"></div>
     </form></div>`
 }
 export function formDetails(form,key) {
   return [...form.querySelectorAll('[data-items="'+key+'"] .salary-detail')].map(row=>({
     name:row.querySelector('[name=itemName]').value.trim(),
-    amount:Number(row.querySelector('[name=itemUnits]').value)*unit
+    amount:Number(row.querySelector('[name=itemAmount]').value)
   }))
 }
 export function readSalaryForm(fields,b,data) {
@@ -100,62 +93,32 @@ export function readSalaryForm(fields,b,data) {
   const income=number('income')
   const fixed=fixedPlanSummary(b,data).afterPayroll
   const special=number('special')
-  const specialName=String(fields.get('specialName')).trim()
-  const savings=salaryDetails(b,data,'savings')
-  const investment=salaryDetails(b,data,'investment')
+  const {parts}=salaryOverview(b,data)
   const rules={minimum:number('minimum'),rate:number('rate'),floor:number('floor')}
-  const mode=fields.get('mode')
-  const savingsTotal=detailsTotal(savings)
   const recommendation=calculateSalary({income,fixed,special,investment:0,rules})
-  const calc=calculateSalary({income,fixed,special,investment:detailsTotal(investment),rules,
-    manualSavings:mode==='manual'?savingsTotal:recommendation.savings})
-  return {income,fixed,special,specialName,savings,investment,rules,mode,savingsTotal,calc,recommendation}
+  const assetRatio=income?(parts.savings+parts.investment)/income*100:null
+  return {recommendation,assetRatio}
 }
-export function salaryWarnings(b,data,living) {
-  const totals=summarize(b,data)
-  const weekly=weeklyAllocation({...b,totalAmount:Math.max(0,living)},data)
-  const warnings=[]
-  if(totals.actual>living) warnings.push('已有生活消费超过新预算')
-  if(totals.outstanding>0&&totals.actual+totals.outstanding>living) warnings.push('已有消费与待付预留合计超过新预算')
-  if(weekly.over) warnings.push('现有周预算超出可分配金额 '+yen(weekly.over))
-  return warnings
-}
-function recommendationMarkup({savings,living}) {
-  return `<h3>合理分配建议</h3><p class="muted">按实际到账工资、固定支出、特别支出和分配规则计算。</p>
-    <dl class="budget-facts"><div><dt>推荐现金储蓄</dt><dd>${yen(savings)}</dd></div>
-      <div><dt>推荐生活费预算</dt><dd>${yen(living)}</dd></div></dl>`
-}
-function resultMarkup({income,fixed,special,calc},warnings,heading) {
-  return `<h3>${heading}</h3><dl class="budget-facts">
-      ${[['现金储蓄',yen(calc.savings)],['生活费预算',yen(calc.living)],['投资',yen(calc.investment)],
-        ['固定支出',yen(fixed)],['特别支出',yen(special)],['储蓄与投资合计',yen(calc.assets)],['实际资产积累比例',pct(calc.ratio)]]
-        .map(([label,value])=>`<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
-      ${salaryBar(income,{living:calc.living,fixed,special,investment:calc.investment,savings:calc.savings})}
-      ${warnings.length?`<ul class="salary-warnings">${warnings.map(text=>`<li>${text}</li>`).join('')}</ul>`:'<p class="muted">分配满足当前保障条件。</p>'}`
-}
-export function savedSalaryResult(b,data) {
-  const plan=salaryPlan(b,data)
-  if(!plan) return `<div class="panel overview-card"><div class="progress-status"><span>已到账 <strong>${yen(sectionTotal(b,'income',data).actual)}</strong></span></div>
-    <p class="muted">暂无已确认的分配结果。可在设置中计算并确认本期方案。</p></div>`
-  const investment=detailsTotal(plan.investment)
-  const calc=calculateSalary({...plan,investment,manualSavings:detailsTotal(plan.savings)})
-  return `<div class="panel overview-card"><p class="muted">已到账 <strong>${yen(plan.income)}</strong> · 已确认方案</p>
-    ${fixedChange(b,data)}${resultMarkup({...plan,calc},[...calc.warnings,...salaryWarnings(b,data,plan.living)],'已确认分配')}</div>`
-}
+
 export function renderSalaryResult(form,b,data) {
   const output=form.querySelector('.salary-preview')
+  const ratio=form.querySelector('.salary-asset-ratio')
   const summary=form.querySelector('details summary small')
   const min=form.elements.minimum.value
   const rate=form.elements.rate.value
   const floor=form.elements.floor.value
   summary.textContent='最低储蓄 '+yen(Number(min))+' · 目标 '+rate+'% · 生活费保障 '+yen(Number(floor))
   try {
-    const {income,fixed,special,mode,savingsTotal,calc,recommendation}=readSalaryForm(new FormData(form),b,data)
-    const warnings=[...calc.warnings,...salaryWarnings(b,data,calc.living)]
-    if(calc.living<0) warnings.unshift('资金缺口 '+yen(-calc.living)+'，调整后才能应用')
-    if(mode==='recommended'&&savingsTotal!==calc.savings) warnings.push('请在储蓄页将明细合计调整到推荐值，或选择手动金额')
-    output.innerHTML=recommendationMarkup(recommendation)+resultMarkup({income,fixed,special,calc},warnings,'待确认分配')
-  } catch(error) {output.textContent=error.message}
+    const {recommendation,assetRatio}=readSalaryForm(new FormData(form),b,data)
+    ratio.textContent=pct(assetRatio)
+    output.innerHTML=`<h3>合理分配建议</h3><dl class="budget-facts">
+      <div><dt>推荐生活费</dt><dd>${yen(Math.max(0,recommendation.living))}</dd></div>
+      <div><dt>推荐储蓄及投资合计</dt><dd>${yen(recommendation.assets)}</dd></div></dl>
+      ${recommendation.warnings.length?`<p class="muted">${recommendation.warnings.join(' · ')}</p>`:''}`
+  } catch(error) {
+    ratio.textContent='—'
+    output.textContent=error.message
+  }
 }
 export function salaryCommand(button) {
   const mode=button.dataset.salaryCommand
@@ -167,7 +130,7 @@ export function salaryCommand(button) {
   } else if(mode==='remove') {
     row.remove()
   } else {
-    const input=row.querySelector('[name=itemUnits]')
-    input.value=Math.max(0,Math.min(Number(input.max),Number(input.value)+(mode==='increment'?1:-1)))
+    const input=row.querySelector('[name=itemAmount]')
+    input.value=Math.max(0,Math.min(Number(input.max),Number(input.value)+(mode==='increment'?unit:-unit)))
   }
 }

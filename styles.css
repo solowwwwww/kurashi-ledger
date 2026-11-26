@@ -25,8 +25,6 @@ h3{font-size:1rem}
 .big,.money{font-variant-numeric:tabular-nums;font-weight:700;overflow-wrap:anywhere}
 .big{font-size:clamp(2.35rem,8vw,4rem);letter-spacing:-.04em}
 .hero .muted{color:#e2eee6}
-.investment-budget h1{margin:0}
-.investment-budget button{color:#164a3b}
 .figures{display:grid;grid-template-columns:1fr 1fr;gap:10px;border-top:1px solid #ffffff42;margin-top:18px;padding-top:14px}
 .figures strong{display:block;margin-top:5px;font-size:1.18rem}
 .section{margin-top:23px}
