@@ -250,7 +250,7 @@ function budgetPage(b) {
     <div class="row"><div>预留后预算</div><strong class="money">${yen(b.totalAmount-totals.outstanding)}</strong></div>
     <div class="row"><div>扣除支出后的可用金额</div><strong class="money">${yen(totals.available)}</strong></div>
     ${livingProgress(b,totals)}`,true)}
-  <div class="actions">${button('＋ 记一笔','living-expense','','primary')}${button('＋ 添加预留','reservation')}</div>
+  <div class="actions">${button('＋ 添加预留','reservation')}</div>
   ${disclosure('reservations','预留项目',reservationsPanel(totals),true)}
   ${disclosure('weekly','每周支出',weeklyPanel(b),true)}
   ${disclosure('living-records','消费明细',transactionRows(ordered(ordinaryTransactions(totals.expenses,data))),true)}
@@ -710,7 +710,6 @@ document.addEventListener('click',async event=>{
       case 'week-budget': weekBudgetEditor(id);break
       case 'period': selected=shift(selected,Number(id));filters={from:'',to:'',category:'',paymentMethod:''};render();break
       case 'initial': selected=initial;render();break
-      case 'living-expense': transactionEditor('');break
       case 'copy-fixed-plans': {
         const b=selectedBudget()
         let copied
