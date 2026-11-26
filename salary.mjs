@@ -7,11 +7,12 @@ function total(rows) {
   checkMoney(value)
   return value
 }
-export function validateAllocationDetails(rows) {
+export function validateAllocationDetails(rows,increment=unit) {
   if(!Array.isArray(rows)) throw Error('明细缺失')
   for(const row of rows) {
     checkMoney(row.amount)
-    if(row.amount%unit!==0||typeof row.name!=='string'||!row.name.trim()) throw Error('请填写项目名称及万元整数金额')
+    if(typeof row.name!=='string'||!row.name.trim()) throw Error('请填写项目名称')
+    if(row.amount%increment!==0) throw Error('请填写万元整数金额')
   }
   total(rows)
 }
@@ -21,7 +22,7 @@ export function validateSalary(plan) {
   if(!Number.isInteger(plan.rules?.rate)||plan.rules.rate<0||plan.rules.rate>100||!['recommended','manual'].includes(plan.mode)||
      typeof plan.specialName!=='string'||(plan.special>0&&!plan.specialName.trim())) throw Error('分配规则或特别支出名称无效')
   validateAllocationDetails(plan.savings)
-  validateAllocationDetails(plan.investment)
+  validateAllocationDetails(plan.investment,1)
   if(plan.income-plan.fixed-plan.special-total(plan.investment)-total(plan.savings)!==plan.living) throw Error('工资分配金额不平衡')
   return plan
 }

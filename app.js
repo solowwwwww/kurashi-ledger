@@ -1,7 +1,7 @@
 import {expenseIcon} from './expense-icons.mjs'
 import {detailsTotal} from './salary.mjs'
 import {salaryPlan,salaryBar,salaryOverview,fixedChange,salaryForm,savedSalaryResult,readSalaryForm,renderSalaryResult,salaryWarnings,salaryCommand,salaryDetails,salaryDetailsEditor,formDetails} from './salary-view.mjs'
-import {categories,methods,historicalMethods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation,fixedPlanSummary,recordFixedPayment,undoFixedPayment,ordinaryTransactions,copyFixedPlans,applySalaryPlan,expenseReport} from './ledger.mjs'
+import {categories,methods,historicalMethods,initial,today,cycle,shift,budget,summarize,weeks,yen,validDate,sections,sectionTotal,livingBreakdown,weeklyAllocation,updateWeeklyBudget,acceptsPayment,closeReservation,allocationPlans,fixedPlanSummary,recordAllocationPayment,undoAllocationPayment,ordinaryTransactions,copyFixedPlans,applySalaryPlan,expenseReport} from './ledger.mjs'
 import {openLedger,access} from './storage.mjs'
 import {exportCSV,previewCSV,exportBackup,mergeBackup,readBackup} from './interchange.mjs'
 
@@ -116,26 +116,50 @@ function sectionsOverview(b,totals) {
       const {actual,goal}=sectionTotal(b,id,data)
       const fixed=id==='fixed'?fixedPlanSummary(b,data):null
       const locked=salaryPlan(b,data)
-      const target=fixed?fixed.expected||undefined:locked?detailsTotal(locked[id])||undefined:goal?.amount
+      const target=fixed?fixed.expected||undefined:id==='investment'?detailsTotal(salaryDetails(b,data,id))||undefined:
+        locked?detailsTotal(locked[id])||undefined:goal?.amount
       return overviewCard(id,section.label,progress(section.label,actual,target,section.actual)+
         (fixed?.plans.length?`<p class="muted">预计扣款 ${yen(fixed.expected)} · 待扣款 ${yen(fixed.pending)}</p>`:''))
     }).join('')}</div></section>`
 }
+function plannedRows(plans,section) {
+  const fixed=section==='fixed'
+  const done=fixed?'已付款':'已投入'
+  const pending=fixed?'待付款':'待投入'
+  const rows=[...plans].sort((a,b)=>a.date.localeCompare(b.date)||a.description.localeCompare(b.description,'zh-CN'))
+  return `
+    ${rows.map(row=>`<div class="fixed-plan-row">
+      <div class="row"><div><strong>${esc(row.description)}</strong><small>预计 ${fmtDate(row.date)} · ${row.beforeIncome?'工资到账前已扣 · ':''}${row.payment?done:(row.date<today()?'已过预计日期 · ':'')+pending}</small></div>
+      <strong class="money">${yen(row.amount)}</strong>
+      ${row.payment?button('✓',fixed?'undo-fixed-payment':'undo-investment-payment',row.payment.id,'fixed-check paid',fixed?'撤回'+row.description+'的付款确认':'撤回'+row.description+'的投入确认'):
+        button('✓',fixed?'fixed-payment':'investment-payment',row.id,'fixed-check','标记'+row.description+done)}</div>
+      ${row.payment?`<p class="muted">${fixed?'实付':'实投'} ${yen(row.payment.amount)} · ${fmtDate(row.payment.date)}</p>`:
+        `<div class="actions">${button('编辑计划',fixed?'fixed-plan':'investment-plan',row.id)}</div>`}</div>`).join('')||`<p class="empty">暂无${fixed?'预计扣款':'投资项目'}</p>`}`
+}
 function fixedPlansPanel(plan) {
-  const rows=[...plan.plans].sort((a,b)=>a.date.localeCompare(b.date)||a.description.localeCompare(b.description,'zh-CN'))
   return `<section class="section"><div class="sectionhead"><h2>预计扣款</h2>${button('＋ 添加预计扣款','fixed-plan','','primary')}</div>
     <div class="panel"><div class="actions">${button('沿用上月项目','copy-fixed-plans')}</div><p class="muted">本期预计 ${yen(plan.expected)} · 待扣款 ${yen(plan.pending)}</p>
-    ${rows.map(row=>`<div class="fixed-plan-row">
-      <div class="row"><div><strong>${esc(row.description)}</strong><small>预计 ${fmtDate(row.date)} · ${row.beforeIncome?'工资到账前已扣 · ':''}${row.payment?'已付款':row.date<today()?'已过预计日期 · 待付款':'待付款'}</small></div>
-      <strong class="money">${yen(row.amount)}</strong>
-      ${row.payment?button('✓','undo-fixed-payment',row.payment.id,'fixed-check paid','撤回'+row.description+'的付款确认'):button('✓','fixed-payment',row.id,'fixed-check','标记'+row.description+'已付款')}</div>
-      ${row.payment?`<p class="muted">实付 ${yen(row.payment.amount)} · ${fmtDate(row.payment.date)}</p>`:
-        `<div class="actions">${button('编辑计划','fixed-plan',row.id)}</div>`}</div>`).join('')||'<p class="empty">暂无预计扣款</p>'}</div></section>`
+    ${plannedRows(plan.plans,'fixed')}</div></section>`
 }
 function allocationRows(records) {
   return ordered(records).map(row=>`<div class="row"><div><strong>${esc(row.description)}</strong><small>${fmtDate(row.date)}</small></div>${button(yen(row.amount),'section-record',row.id,'money')}</div>`).join('')
 }
+function investmentPage(b) {
+  const {actual,records}=sectionTotal(b,'investment',data)
+  const planned=allocationPlans(b,data,'investment')
+  const total=detailsTotal(salaryDetails(b,data,'investment'))
+  const history=records.filter(row=>!row.planId)
+  const oldDetails=b.salaryDetails?.investment??(b.investmentBudget===undefined?salaryPlan(b,data)?.investment:undefined)??[]
+  return `<section class="hero investment-budget"><div class="sectionhead"><h1>投资总预算</h1>${button('修改预算','investment-budget')}</div>
+    <p class="big">${yen(total)}</p><div class="figures"><div><span class="muted">已投入</span><strong>${yen(actual)}</strong></div>
+    <div><span class="muted">${actual>total?'超出预算':'剩余预算'}</span><strong>${yen(Math.abs(total-actual))}</strong></div></div></section>
+  <section class="section"><div class="sectionhead"><h2>投资项目</h2>${button('＋ 添加投资项目','investment-plan','','primary')}</div>
+    <div class="panel">${plannedRows(planned,'investment')}
+    ${history.length?`<details class="ledger-disclosure"><summary>原有投资记录</summary>${allocationRows(history)}</details>`:''}
+    ${oldDetails.length?`<details class="ledger-disclosure"><summary>原有投资预算明细</summary>${oldDetails.map(row=>`<div class="row"><span>${esc(row.name)}</span><strong>${yen(row.amount)}</strong></div>`).join('')}</details>`:''}</div></section>`
+}
 function sectionPage(b,id) {
+  if(id==='investment') return investmentPage(b)
   const section=sections[id]
   const {actual,goal,records}=sectionTotal(b,id,data)
   const fixed=id==='fixed'?fixedPlanSummary(b,data):null
@@ -400,7 +424,7 @@ function sectionRecord(id) {
   const b=selectedBudget()
   const section=tab
   const row=data.allocations.find(x=>x.id===id)
-  if(row?.planId) throw Error('已付款的固定费用不可编辑')
+  if(row?.planId) throw Error('请先撤回计划的确认再编辑')
   const now=today()
   const date=row?.date||(now>=b.startDate&&now<=b.endDate?now:b.startDate)
   show(row?'编辑记录':'记录'+sections[section].label,`<label>说明<input name="description" maxlength="140" value="${esc(row?.description)}" required></label>
@@ -410,43 +434,56 @@ function sectionRecord(id) {
     save(current=>{
       if(id&&!current.allocations.some(x=>x.id===id)) throw Error('此记录已在其他窗口删除')
       const latest=current.allocations.find(x=>x.id===id)
-      if(latest?.planId) throw Error('已付款的固定费用不可编辑')
+      if(latest?.planId) throw Error('请先撤回计划的确认再编辑')
       const entry={...latest,id:id||crypto.randomUUID(),kind:'record',budgetId:b.id,section,amount:Number(form.get('amount')),
         description:String(form.get('description')).trim(),date:form.get('date'),createdAt:row?.createdAt||stamp()}
       return {...current,allocations:upsert(current.allocations,entry)}
     },'记录已保存'))
 }
-function fixedPlanEditor(id) {
+function investmentBudgetEditor() {
   const b=selectedBudget()
-  const {plans}=fixedPlanSummary(b,data)
-  const plan=plans.find(row=>row.id===id)
-  if(plan?.payment) throw Error('已付款的固定费用不可编辑')
+  const total=detailsTotal(salaryDetails(b,data,'investment'))
+  show('修改投资总预算',`<label>投资总预算（日元）<input name="amount" type="number" inputmode="numeric" min="0" step="1" value="${total}" required></label>`,form=>
+    save(current=>{
+      const latest=current.budgets.find(row=>row.id===b.id)
+      if(!latest||detailsTotal(salaryDetails(latest,current,'investment'))!==total) throw Error('预算已变更，请重新打开修改')
+      return {...current,budgets:upsert(current.budgets,{...latest,investmentBudget:Number(form.get('amount')),updatedAt:stamp()})}
+    },'投资总预算已保存'))
+}
+function allocationPlanEditor(section,id) {
+  const b=selectedBudget()
+  const fixed=section==='fixed'
+  const label=fixed?'预计扣款':'投资项目'
+  const plan=allocationPlans(b,data,section).find(row=>row.id===id)
+  if(id&&!plan) throw Error('此计划已移除')
+  if(plan?.payment) throw Error(fixed?'已付款的固定费用不可编辑':'已投入的投资项目不可编辑')
   const now=today()
   const date=plan?.date||(now>=b.startDate&&now<=b.endDate?now:b.startDate)
-  show(plan?'编辑预计扣款':'添加预计扣款',`<label>项目名称<input name="description" maxlength="140" placeholder="例如：话费、贷款" value="${esc(plan?.description)}" required></label>
+  show((plan?'编辑':'添加')+label,`<label>项目名称<input name="description" maxlength="140" placeholder="${fixed?'例如：话费、贷款':'例如：NISA 定投'}" value="${esc(plan?.description)}" required></label>
     <div class="fields"><label>预计金额（日元）<input name="amount" type="number" inputmode="numeric" min="1" step="1" value="${plan?.amount??''}" required></label>
-    <label>预计扣款日期<input name="date" type="date" min="${b.startDate}" max="${b.endDate}" value="${date}" required></label></div>
-    <label class="inline-check"><input name="beforeIncome" type="checkbox" ${plan?.beforeIncome?'checked':''}>工资到账前已扣（工资分配中不再扣除）</label>
-    <p class="muted">此项目属于本账期。打勾后计入实际支出，再点绿勾可以撤回付款。</p>
-    ${plan&&!plan.payment?button('删除计划','delete-fixed-plan',plan.id,'danger'):''}`,form=>
+    <label>${fixed?'预计扣款日期':'预计投入日期'}<input name="date" type="date" min="${b.startDate}" max="${b.endDate}" value="${date}" required></label></div>
+    ${fixed?`<label class="inline-check"><input name="beforeIncome" type="checkbox" ${plan?.beforeIncome?'checked':''}>工资到账前已扣（工资分配中不再扣除）</label>`:''}
+    <p class="muted">${fixed?'此项目属于本账期。打勾后计入实际支出，再点绿勾可以撤回付款。':'打勾后计入已投入金额，再点绿勾可以撤回。'}</p>
+    ${plan?button('删除计划',fixed?'delete-fixed-plan':'delete-investment-plan',plan.id,'danger'):''}`,form=>
     save(current=>{
-      const previous=current.allocations.find(row=>row.id===id&&row.kind==='plan')
-      if(id&&!previous) throw Error('此预计扣款已移除')
-      if(id&&current.allocations.some(row=>row.kind==='record'&&row.planId===id)) throw Error('已付款的固定费用不可编辑')
-      const entry={...previous,id:id||crypto.randomUUID(),kind:'plan',section:'fixed',budgetId:b.id,
-        description:String(form.get('description')).trim(),amount:Number(form.get('amount')),date:form.get('date'),beforeIncome:form.has('beforeIncome')}
+      const previous=allocationPlans(b,current,section).find(row=>row.id===id)
+      if(id&&!previous) throw Error('此计划已移除')
+      if(previous?.payment) throw Error('已确认的计划不可编辑')
+      const entry={...current.allocations.find(row=>row.id===id),id:id||crypto.randomUUID(),kind:'plan',section,budgetId:b.id,
+        description:String(form.get('description')).trim(),amount:Number(form.get('amount')),date:form.get('date'),
+        ...(fixed?{beforeIncome:form.has('beforeIncome')}:{})}
       return {...current,allocations:upsert(current.allocations,entry)}
-    },'预计扣款已保存'))
+    },label+'已保存'))
 }
-function markFixedPaid(id) {
+function markAllocationPaid(section,id) {
   return save(current=>{
-    const plan=current.allocations.find(row=>row.id===id&&row.kind==='plan'&&row.section==='fixed')
-    if(!plan) throw Error('此预计扣款已移除')
+    const plan=current.allocations.find(row=>row.id===id&&row.kind==='plan'&&row.section===section)
+    if(!plan) throw Error('此计划已移除')
     const b=current.budgets.find(row=>row.id===plan.budgetId)
     const now=today()
     const date=now>=b.startDate&&now<=b.endDate?now:plan.date
-    return recordFixedPayment(current,id,{id:crypto.randomUUID(),amount:plan.amount,date,createdAt:stamp()})
-  },'已付款，已计入固定费用')
+    return recordAllocationPayment(current,section,id,{id:crypto.randomUUID(),amount:plan.amount,date,createdAt:stamp()})
+  },section==='fixed'?'已付款，已计入固定费用':'已确认投入')
 }
 function budgetEditor() {
   const existing=selectedBudget()
@@ -634,7 +671,9 @@ app.addEventListener('input',event=>{
   const form=event.target.closest('#salary-form')
   if(form) {
     const b=selectedBudget()
-    salaryDrafts.set(b.id,Object.fromEntries(new FormData(form)))
+    const draft=Object.fromEntries(new FormData(form))
+    if(event.target.name!=='mode'&&!salaryDrafts.get(b.id)?.mode) delete draft.mode
+    salaryDrafts.set(b.id,draft)
     renderSalaryResult(form,b,data)
   }
 })
@@ -663,7 +702,7 @@ app.addEventListener('submit',async event=>{
   event.preventDefault()
   try {
     const b=selectedBudget()
-    const {income,fixed,special,specialName,savings,investment,rules,mode,savingsTotal,calc}=readSalaryForm(form,b,data)
+    const {income,fixed,special,specialName,savings,investment,rules,mode,savingsTotal,calc}=readSalaryForm(new FormData(form),b,data)
     if(calc.living<0) throw Error('请先调整资金缺口，再确认分配')
     if(savingsTotal!==calc.savings) throw Error('请在储蓄页调整明细合计，或在此选择手动金额')
     if(special>0&&!specialName) throw Error('请填写特别支出名称')
@@ -721,19 +760,29 @@ document.addEventListener('click',async event=>{
         message(copied.added?'已沿用 '+copied.added+' 个项目，付款状态为待付款':copied.source?'没有可补充的项目':'上一账期没有固定支出项目')
         break
       }
-      case 'fixed-plan': fixedPlanEditor(id);break
-      case 'fixed-payment': busy=true;await markFixedPaid(id);break
-      case 'undo-fixed-payment':
+      case 'investment-budget': investmentBudgetEditor();break
+      case 'fixed-plan': allocationPlanEditor('fixed',id);break
+      case 'investment-plan': allocationPlanEditor('investment',id);break
+      case 'fixed-payment':
+      case 'investment-payment':
         busy=true
-        await save(current=>undoFixedPayment(current,id),'已撤回付款')
+        await markAllocationPaid(action==='fixed-payment'?'fixed':'investment',id)
+        break
+      case 'undo-fixed-payment':
+      case 'undo-investment-payment':
+        busy=true
+        await save(current=>undoAllocationPayment(current,action==='undo-fixed-payment'?'fixed':'investment',id),
+          action==='undo-fixed-payment'?'已撤回付款':'已撤回投入')
         break
       case 'delete-fixed-plan':
-        if(confirm('确定删除这项预计扣款吗？')) {
+      case 'delete-investment-plan':
+        if(confirm(action==='delete-fixed-plan'?'确定删除这项预计扣款吗？':'确定删除这项投资计划吗？')) {
+          const section=action==='delete-fixed-plan'?'fixed':'investment'
           busy=true
           await save(current=>{
             if(current.allocations.some(row=>row.kind==='record'&&row.planId===id)) throw Error('已确认扣款的计划必须保留')
-            return {...current,allocations:current.allocations.filter(row=>row.id!==id||row.kind!=='plan')}
-          },'预计扣款已删除')
+            return {...current,allocations:current.allocations.filter(row=>row.id!==id||row.kind!=='plan'||row.section!==section)}
+          },'计划已删除')
         }
         break
       case 'section-goal': sectionGoal(id);break
@@ -742,7 +791,7 @@ document.addEventListener('click',async event=>{
         if(confirm('确定删除这项总账数据吗？')) {
           busy=true
           await save(current=>{
-            if(current.allocations.find(row=>row.id===id)?.planId) throw Error('已付款的固定费用不可删除')
+            if(current.allocations.find(row=>row.id===id)?.planId) throw Error('请先撤回计划的确认再删除')
             return {...current,allocations:current.allocations.filter(row=>row.id!==id)}
           },'已删除')
         }

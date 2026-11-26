@@ -142,11 +142,15 @@ export function sectionTotal(b,section,data) {
   return {goal,records,actual:sum(records)}
 }
 
-export function fixedPlanSummary(b,data) {
-  const {records}=sectionTotal(b,'fixed',data)
+export function allocationPlans(b,data,section) {
+  const {records}=sectionTotal(b,section,data)
   const payments=new Map(records.filter(row=>row.planId).map(row=>[row.planId,row]))
-  const plans=data.allocations.filter(row=>row.budgetId===b.id&&row.section==='fixed'&&row.kind==='plan')
+  return data.allocations.filter(row=>row.budgetId===b.id&&row.section===section&&row.kind==='plan')
     .map(row=>({...row,payment:payments.get(row.id)}))
+}
+
+export function fixedPlanSummary(b,data) {
+  const plans=allocationPlans(b,data,'fixed')
   return {plans,expected:sum(plans),pending:sum(plans.filter(row=>!row.payment)),afterPayroll:sum(plans.filter(row=>!row.beforeIncome))}
 }
 
@@ -198,16 +202,22 @@ export function copyFixedPlans(b,data,id=()=>crypto.randomUUID()) {
 }
 
 export function recordFixedPayment(data,planId,payment) {
-  const plan=data.allocations.find(row=>row.id===planId&&row.kind==='plan'&&row.section==='fixed')
-  if(!plan) throw Error('此预计扣款已移除')
-  if(data.allocations.some(row=>row.kind==='record'&&row.planId===planId)) throw Error('此项已确认扣款，请编辑已有记录')
+  return recordAllocationPayment(data,'fixed',planId,payment)
+}
+export function recordAllocationPayment(data,section,planId,payment) {
+  const plan=data.allocations.find(row=>row.id===planId&&row.kind==='plan'&&row.section===section)
+  if(!plan) throw Error('此计划已移除')
+  if(data.allocations.some(row=>row.kind==='record'&&row.planId===planId)) throw Error('此项已确认扣款')
   return {...data,allocations:[...data.allocations,{
-    ...payment,kind:'record',budgetId:plan.budgetId,section:'fixed',planId,description:plan.description
+    ...payment,kind:'record',budgetId:plan.budgetId,section,planId,description:plan.description
   }]}
 }
 
 export function undoFixedPayment(data,paymentId) {
-  const payment=data.allocations.find(row=>row.id===paymentId&&row.kind==='record'&&row.section==='fixed'&&row.planId)
+  return undoAllocationPayment(data,'fixed',paymentId)
+}
+export function undoAllocationPayment(data,section,paymentId) {
+  const payment=data.allocations.find(row=>row.id===paymentId&&row.kind==='record'&&row.section===section&&row.planId)
   if(!payment) throw Error('这笔确认付款已撤回或不存在')
   return {...data,allocations:data.allocations.filter(row=>row!==payment)}
 }
@@ -245,6 +255,7 @@ export function validate(data) {
     for(const field of ['investment','savings']) {
       if(b.salaryDetails?.[field]!==undefined) validateAllocationDetails(b.salaryDetails[field])
     }
+    if(b.investmentBudget!==undefined&&!amount(b.investmentBudget,0)) throw Error('投资总预算必须为非负整数日元')
     starts.add(b.startDate)
   }
   for(const r of data.reservations) {
@@ -272,10 +283,11 @@ export function validate(data) {
   const plansById=new Map(data.allocations.filter(row=>row.kind==='plan').map(row=>[row.id,row]))
   for(const row of data.allocations) {
     const b=budgets.get(row.budgetId)
-    if(!b||!Object.hasOwn(sections,row.section)||!amount(row.amount)||!['goal','record','plan'].includes(row.kind)||(row.kind==='plan'&&row.section!=='fixed')) throw Error('无效的总账记录')
+    if(!b||!Object.hasOwn(sections,row.section)||!amount(row.amount)||!['goal','record','plan'].includes(row.kind)||
+       (row.kind==='plan'&&!['fixed','investment'].includes(row.section))) throw Error('无效的总账记录')
     if(row.planId) {
       const plan=plansById.get(row.planId)
-      if(row.kind!=='record'||row.section!=='fixed'||plan?.budgetId!==b.id||paidPlans.has(row.planId)) {
+      if(row.kind!=='record'||plan?.section!==row.section||plan.budgetId!==b.id||paidPlans.has(row.planId)) {
         throw Error('关联的固定费用计划无效或已确认扣款')
       }
       paidPlans.add(row.planId)
